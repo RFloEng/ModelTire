@@ -229,9 +229,16 @@ local function rackCurve(run)
   for _, s in ipairs(run.samples) do
     local slip, n = 0, 0
     for _, w in ipairs(s.w) do slip, n = slip + math.deg(math.abs(w.alpha or 0)), n + 1 end
-    if n > 0 and s.v > 2 and s.rack then pts[#pts + 1] = {slip / n, math.abs(s.rack)} end
+    if n > 0 and s.v > 2 and s.rack then pts[#pts + 1] = {slip / n, s.rack} end
   end
-  return pts
+  -- a short moving average of the signed force (the rack force swings with every bump), then the magnitude
+  local out = {}
+  for i = 1, #pts do
+    local sum, c = 0, 0
+    for k = math.max(1, i - 2), math.min(#pts, i + 2) do sum, c = sum + pts[k][2], c + 1 end
+    out[i] = {pts[i][1], math.abs(sum / c)}
+  end
+  return out
 end
 
 -- the selected Pacejka tyre's pure-slip curve at the car's mean static wheel load (reference surface)

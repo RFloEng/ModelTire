@@ -49,7 +49,7 @@ local modeHelp = {
 local G_TUNE, G_STAB, G_ADV, G_TEST = "tune", "stab", "adv", "test"
 local paramDefs = {
   -- the settings most worth touching
-  {"rbrGripScale", "f", 0.3, 1.5, 0.8, G_TUNE, {1, 2},
+  {"rbrGripScale", "f", 0.3, 1.5, 0.95, G_TUNE, {1, 2},
     "Multiplies all RBR surface grip. RBR tarmac grips at about mu 1.4-1.5, more than most BeamNG tyres, so a car "
     .. "can roll over in corners. 1.0 = RBR's own numbers; 0.6-0.8 feels closer to BeamNG cars."},
   {"fzFilterMs", "f", 0, 60, 15, G_STAB, {0, 1, 4},
@@ -209,7 +209,7 @@ local svjEntries, svjPath, svjProblems = {}, "", {}
 local svjIdx = 0
 local svjModelIdx = 1
 local svjSurfaceIdx = 1
-local svjGripScale = im.FloatPtr(1.0)
+local svjGripScale = im.FloatPtr(1.25)
 local svjSurfaces = {
   {"Dry asphalt", 1.0}, {"Damp asphalt", 0.85}, {"Wet asphalt", 0.70}, {"Packed gravel", 0.60},
   {"Loose gravel", 0.50}, {"Dirt", 0.55}, {"Snow", 0.30}, {"Ice", 0.12},
@@ -881,7 +881,7 @@ local function drawWindow()
   im.SameLine()
   if im.Button("Reset defaults") then
     for _, d in ipairs(paramDefs) do ptrs[d[1]][0] = d[5] end
-    svjGripScale[0] = 1.0
+    svjGripScale[0] = 1.25
     pushParams()
   end
 

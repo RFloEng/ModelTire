@@ -49,7 +49,7 @@ local P = {
   useRbr102 = false,
   rbrTyre = 1,           -- 1 tarmac, 2 tarmac wet, 3 gravel, 4 snow (rbr102data.lua)
   rbrQuirk102 = true,    -- keep 1.02's temperature-grip quirk (static scaled twice, kinetic not)
-  rbrGripScale = 0.8,    -- multiplies the surface friction (quick global tuning)
+  rbrGripScale = 0.95,   -- multiplies the surface friction (quick global tuning)
   rbrLatStiffScale = 1.0, -- multiplies the carcass lateral and torsional stiffness
   rbrLowSpeedDamping = 0,    -- N*s/m fixed carcass damping while sticking; NOT in 1.02 (0 = vanilla)
   rbrLowSpeedZeta = 0.25,    -- damping ratio of the sticking spring; NOT in 1.02 (0 = vanilla). Stops the standstill ringing
@@ -80,7 +80,7 @@ local P = {
   hydroVoid = 0.3,            -- fraction of the tread that is open grooves
   hydroMuFloor = 0.08,        -- friction scale left when the contact is fully on water
   svjSurfaceShape = true,     -- the surface also changes the curve shape (stiffness, slip at the peak), not only the grip
-  svjGripScale = 1.0,         -- extra grip scale applied on top of the detected surface
+  svjGripScale = 1.25,        -- extra grip scale applied on top of the detected surface
   svjGrip = 1.0,              -- surface friction scale (1 = the surface the coefficients were measured on)
   svjRadiusFromWheel = true,  -- measure the tyre deflection from the BeamNG wheel radius, not the SVJ tyre's
   svjUseCarPressure = false,  -- use the car's tyre pressure for the pressure terms (else the tyre's own)
@@ -1263,6 +1263,25 @@ local function wheelKinematics(s)
   return math.atan(vl / ref), (abs(wsp) * ((vf >= 0) and 1 or -1) - vf) / ref
 end
 
+local rackAcc, rackN = 0, 0
+local function steerRack()
+  if not (hydros and hydros.hydros) then return nil end
+  local ok, rack = pcall(function()
+    local sum, n = 0, 0
+    for _, h in ipairs(hydros.hydros) do
+      if h.inputSource == "steering_input" and h.bcid and h.fgetDisplacement == obj.getBeamLength then
+        local beam = v.data.beams[h.bcid]
+        if beam and beam.beamSpring then
+          sum = sum + (obj:getBeamLength(h.bcid) - obj:getBeamRefLength(h.bcid) * (h.state or 1)) * beam.beamSpring
+          n = n + 1
+        end
+      end
+    end
+    return n > 0 and sum or nil
+  end)
+  return ok and rack or nil
+end
+
 local function sendTelemetry()
   if nativeOn and not initDone then initWheels() end
   local wl = {}
@@ -1321,22 +1340,9 @@ local function sendTelemetry()
   -- is the force on the rack over its stiffness. The force the game would send to a force feedback wheel is built from
   -- the same quantity, but it is only computed when such a wheel is connected, so it is rebuilt here for every setup:
   -- sum over the steering hydros of (beam length - commanded length) x beam spring, in N (a measure, not the wheel torque)
-  if nativeOn and hydros and hydros.hydros then
-    local ok, rack = pcall(function()
-      local sum, n = 0, 0
-      for _, h in ipairs(hydros.hydros) do
-        if h.inputSource == "steering_input" and h.bcid and h.fgetDisplacement == obj.getBeamLength then
-          local beam = v.data.beams[h.bcid]
-          if beam and beam.beamSpring then
-            sum = sum + (obj:getBeamLength(h.bcid) - obj:getBeamRefLength(h.bcid) * (h.state or 1)) * beam.beamSpring
-            n = n + 1
-          end
-        end
-      end
-      return n > 0 and sum or nil
-    end)
-    if ok then data.rack = rack end
-  end
+  -- the mean over the graphics frames since the last report (a single sample of this signal is mostly noise)
+  if nativeOn and rackN > 0 then data.rack = rackAcc / rackN end
+  rackAcc, rackN = 0, 0
   data.rbrTyreList = tyreChoices()
   if fullIsOn and P.fullModel == "svj" then
     data.model = svjTyre and ((P.svjModded and "FULL Modded SVJ Pacejka " or "FULL SVJ Pacejka ") .. tostring(svjTyre.modelName) .. ": " .. tostring(svjTyre.name))
@@ -1460,6 +1466,10 @@ local function onPhysicsStep(dt)
 end
 
 local function updateGFX(dt)
+  if nativeOn then
+    local r = steerRack()
+    if r then rackAcc, rackN = rackAcc + r, rackN + 1 end
+  end
   telemetryTimer = telemetryTimer + dt
   if telemetryTimer >= 0.1 then
     telemetryTimer = 0

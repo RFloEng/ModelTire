@@ -245,7 +245,7 @@ per wheel whose collision events (`onNodeCollision`) report the material and nor
 
 ### Too much grip (car rolls over) and steering feel
 - RBR tarmac grips at mu 1.4-1.5; most BeamNG cars have a higher centre of gravity than the RBR cars and roll over at
-  that grip. `rbrGripScale` (default now 0.8) scales all RBR surface grip; for Pacejka use `extra grip scale`.
+  that grip. `rbrGripScale` (default now 0.95, calibrated so the full mode matches the vanilla peak (about 1.2 g at 55 km/h) on dry tarmac; the light modes then sit about 10 % below) scales all RBR surface grip; for Pacejka use `extra grip scale` (default 1.25, same calibration).
 - Force feedback is the self-aligning torque. `mzScale` (default 1) scales it in all RBR/SVJ modes. In the mode
   `RBR tyre on BeamNG's tyre` the force goes through BeamNG's tyre nodes at the contact patch and the low-speed `hold`
   torque of RBR (up to ~270 N*m) also reaches the steering, which is why that mode can feel much stronger than

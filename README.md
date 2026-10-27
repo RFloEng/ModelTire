@@ -120,7 +120,7 @@ Every setting has a `(?)` tooltip. Settings that do not apply to the chosen mode
 
 | Setting | Default | Applies to | What it does |
 | --- | --- | --- | --- |
-| `rbrGripScale` | 0.8 | RBR | multiplies all RBR surface grip; RBR tarmac grips more than most BeamNG tyres, so lower it if the car rolls over |
+| `rbrGripScale` | 0.95 | RBR | multiplies all RBR surface grip; RBR tarmac grips more than most BeamNG tyres, so lower it if the car rolls over |
 | `mzScale` | 1.0 | modes 1-4 | strength of the self-aligning moment (the force feedback) |
 | `fullSoilSoftness` | 0.6 | full RBR | how soft loose ground is; lower = firmer, higher = sinks more |
 | `svjFz0Scale` | 1.0 | Pacejka | scales the nominal load of tyres without one (higher = the tyre acts as built for a heavier car) |
