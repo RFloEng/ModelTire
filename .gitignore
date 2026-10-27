@@ -1,0 +1,18 @@
+# RBR data is private: never commit it
+modelTire_rbrdata/
+*rbrdata*
+*.rbz
+*.7z*
+rbr_install*
+Physics/
+# tyre libraries and other user data
+*.svj.json
+rbrtyres/
+# working files
+__pycache__/
+*.pyc
+*.log
+*.tmp
+*.docx
+.claude/
+tools/bench/out/

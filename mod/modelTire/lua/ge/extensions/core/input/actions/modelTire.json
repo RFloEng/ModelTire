@@ -1,0 +1,3 @@
+{
+"modelTire_toggleWindow": {"cat": "gameplay", "order": 900, "ctx": "tlua", "onDown": "if modelTire_ui then modelTire_ui.toggleWindow() end", "title": "ModelTire: show/hide window", "desc": "Shows or hides the ModelTire window"}
+}
