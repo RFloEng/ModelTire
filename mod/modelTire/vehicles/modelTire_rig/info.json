@@ -1,0 +1,7 @@
+{
+    "Name":"ModelTire test sled",
+    "Author":"ModelTire",
+    "Type":"Prop",
+    "Description":"A box on four identical wheels, each with its own spring and damper, for repeatable tyre force measurements (see the ModelTire sweep window, test 'rig slip ramp').",
+    "visualTestSkip": true
+}

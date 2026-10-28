@@ -30,6 +30,26 @@ local P = {
   fzNominal = 3500,      -- N
   cornerCoef = 28,       -- cornering stiffness per N of load (N/rad per N): the force peaks at about 3 mu / cornerCoef rad
   longCoef = 30,         -- longitudinal slip stiffness per N of load: the force peaks at about 3 mu / longCoef
+  -- Advanced brush (mode 5): the test tyre above plus load-dependent stiffness, pressure, temperature and wear. Built from
+  -- published tyre physics only (see mod/modelTire/README.md); every number is a plain default to adjust.
+  advBrush = false,
+  advLoadShape = 2.0,    -- stiffness against load: C = coef * Fz0 * sin(2 atan(Fz / (shape Fz0))) / sin(2 atan(1 / shape)); a larger shape = closer to linear
+  advPressureNom = 200,  -- kPa (gauge) where the stiffness and grip numbers apply; the pressure is read from BeamNG's tyre
+  advPressureK = 0.6,    -- stiffness follows (p / p_nom) ^ k
+  advPressureMu = 0.4,   -- grip lost per (p / p_nom - 1) ^ 2
+  advTopt = 75,          -- deg C of best grip
+  advTwidth = 35,        -- deg C: the gaussian width of the grip bump (grip is 61 % of the way to the floor this far from the optimum)
+  advTfloor = 0.7,       -- grip factor far from the optimum (cold or overheated)
+  advTamb = 20,          -- deg C: the air temperature
+  advTstart = 75,        -- deg C: the temperature a tyre starts at (and returns to with Reset)
+  advHeatCap = 6000,     -- J/K of the tread and carcass that heat up
+  advHeatShare = 0.15,   -- fraction of the sliding friction power that heats the tyre (the rest goes into the road and the air)
+  advRollHeat = 0.012,   -- rolling heat: W per N of load per m/s of wheel speed (about 45 C on a light drive)
+  advCoolBase = 8,       -- W/K of cooling at rest
+  advCoolSpeed = 1.2,    -- W/K of extra cooling per m/s of speed
+  advTimeScale = 1,      -- heating and wear run this many times faster (to see them in a short test)
+  advWearJ = 1.2e7,      -- J of sliding friction that wear the tread out (wear 1): about 30 minutes of limit cornering
+  advWearLoss = 0.25,    -- grip lost at wear 1
   relaxLenY = 0.35,      -- lateral relaxation length, m
   relaxLenX = 0.15,      -- longitudinal relaxation length, m
   dampRatio = 0.5,       -- carcass damping, fraction of critical on a quarter car
@@ -43,6 +63,7 @@ local P = {
   patchEverySteps = 4,   -- recompute patch nodes and ground normal every N physics steps
   minFz = 30,            -- N, below this the wheel counts as airborne
   debugDraw = true,
+  brushRimTorque = true, -- brush modes: the longitudinal force goes to the hub and its wheel-spin torque to the rim nodes (as in the FULL modes), not into the tread
   fzFilterMs = 15,       -- ms: low-pass on the load BeamNG reports (its contact load is noisy; the grip limit must not follow it)
   lightModel = "rbr",    -- tyre on BeamNG's own tyre: "rbr" (RBR 1.02) or "svj" (Pacejka from an SVJ file)
   -- RBR 1.02 tyre port (rbr102.lua). When on, the brush parameters above are not used.
@@ -1094,6 +1115,59 @@ local function stepWheelFull(s, dt, refPos, doFrame)
   s.sumX2 = 0
 end
 
+-- Advanced brush helpers ------------------------------------------------------------------------------------------
+-- Stiffness per N falls as the load rises (a tyre's cornering stiffness grows less than in proportion to the load): this is
+-- 1 at the nominal load and the same shape as the Magic Formula's stiffness-against-load term.
+local function advStiffLoad(Fz)
+  local c = P.advLoadShape
+  return math.sin(2 * math.atan(Fz / (c * P.fzNominal))) / math.sin(2 * math.atan(1 / c)) * P.fzNominal / max(Fz, 1)
+end
+
+-- grip against temperature: a gaussian bump from the floor up to 1 at the optimum
+local function advTempFactor(T)
+  local z = (T - P.advTopt) / P.advTwidth
+  return P.advTfloor + (1 - P.advTfloor) * exp(-0.5 * z * z)
+end
+
+-- the pressure of BeamNG's tyre over the nominal one (1 when the tyre has no pressure group)
+local function advPressureRatio(s)
+  if s.pressureGroupId then
+    local p = obj:getGroupPressure(s.pressureGroupId)
+    if p and p > 0 then return max(0.3, min(2.5, (p - 101325) / (P.advPressureNom * 1000))) end
+  end
+  return 1
+end
+
+-- The wheel-spin torque as a pure couple on the rim nodes: tangential forces k * (a x q) on every rim node (q: its position
+-- about the axle), whose torque about the axis a (unit vector) is k * sum |q|^2 = tau. Returns false when the wheel has no rim
+-- nodes to push (then the caller applies the force the old way).
+local function spinCouple(s, ax, ay, az, tau)
+  local rn = s.rimNodes
+  if not rn then return false end
+  local p1, p2 = obj:getNodePosition(s.n1), obj:getNodePosition(s.n2)
+  local hx, hy, hz = (p1.x + p2.x) * 0.5, (p1.y + p2.y) * 0.5, (p1.z + p2.z) * 0.5
+  local qs = s.qbuf or {}
+  s.qbuf = qs
+  local sumQ2 = 0
+  for k = 1, #rn do
+    local p = obj:getNodePosition(rn[k])
+    local qx, qy, qz = p.x - hx, p.y - hy, p.z - hz
+    local d = qx * ax + qy * ay + qz * az
+    qx, qy, qz = qx - d * ax, qy - d * ay, qz - d * az
+    local e = qs[k] or {}
+    qs[k] = e
+    e[1], e[2], e[3] = qx, qy, qz
+    sumQ2 = sumQ2 + qx * qx + qy * qy + qz * qz
+  end
+  if sumQ2 < 1e-6 then return false end
+  local k = tau / sumQ2
+  for j = 1, #rn do
+    local e = qs[j]
+    obj:applyForceVector(rn[j], vec3((ay * e[3] - az * e[2]) * k, (az * e[1] - ax * e[3]) * k, (ax * e[2] - ay * e[1]) * k))
+  end
+  return true
+end
+
 local function stepWheel(s, dt, refPos, doPatch)
   local wd = s.wd
   if wd.isBroken or wd.isTireDeflated then
@@ -1150,6 +1224,16 @@ local function stepWheel(s, dt, refPos, doPatch)
   -- stiffness and damping at this load
   local Cy = P.cornerCoef * Fz
   local Cx = P.longCoef * Fz
+  local advMu = 1
+  if P.advBrush then
+    -- load: stiffness per N falls as the load rises; pressure: stiffness and grip follow the tyre's own pressure;
+    -- temperature and wear: grip (the state of the last step)
+    local kl = advStiffLoad(Fz)
+    local pr = advPressureRatio(s)
+    local kp = pr ^ P.advPressureK
+    Cy, Cx = P.cornerCoef * Fz * kl * kp, P.longCoef * Fz * kl * kp
+    advMu = advTempFactor(s.advT or P.advTstart) * (1 - P.advWearLoss * min(1, s.advWear or 0)) * max(0.6, 1 - P.advPressureMu * (pr - 1) ^ 2)
+  end
   local ky = Cy / P.relaxLenY
   local kx = Cx / P.relaxLenX
   local mq = Fz / g -- quarter car mass carried by this wheel
@@ -1184,7 +1268,7 @@ local function stepWheel(s, dt, refPos, doPatch)
   local slipSpeed = sqrt(sx * sx + sy * sy)
   local q = slipSpeed / P.stribeckVel
   local mu = P.muSlide + (P.mu - P.muSlide) * exp(-q * q)
-  mu = mu * max(0.4, 1 - P.loadSens * (Fz / P.fzNominal - 1)) * grip
+  mu = mu * max(0.4, 1 - P.loadSens * (Fz / P.fzNominal - 1)) * grip * advMu
   local FmaxY = mu * Fz
   local FmaxX = mu * P.muLongScale * Fz
   -- Brush model with a parabolic pressure distribution (Pacejka, chapter 3; Fiala): the spring force Fs of the bristles is
@@ -1216,10 +1300,35 @@ local function stepWheel(s, dt, refPos, doPatch)
 
   s.Fx, s.Fy, s.muEff, s.sliding = FxTotal, Fy, mu, sliding
 
+  if P.advBrush then
+    -- one-node thermal model: sliding friction power (force x slip speed, counted as it saturates) and rolling heat in,
+    -- convection out; wear grows with the same power, faster when overheated
+    local T = s.advT or P.advTstart
+    local slideShare = max(0, min(1, (ur - 0.3) / 0.7))
+    local Psl = (abs(Fx * sx) + abs(Fy * sy)) * slideShare
+    local speed = max(abs(vx), abs(wheelSpeed))
+    local heat = P.advHeatShare * Psl + P.advRollHeat * Fz * abs(wheelSpeed)
+    local cool = (P.advCoolBase + P.advCoolSpeed * speed) * (T - P.advTamb)
+    local k = dt * P.advTimeScale
+    T = T + (heat - cool) / P.advHeatCap * k
+    s.advT = max(P.advTamb - 40, min(220, T))
+    local hot = max(0, (T - 110) / 25)
+    s.advWear = (s.advWear or 0) + Psl * (1 + hot * hot) / P.advWearJ * k
+    s.advP = Psl
+  end
+
   -- apply: longitudinal shared evenly, lateral weighted so it acts a trail
   -- behind the patch centre (gives aligning torque), trail fades as Fy saturates
   local count = s.patchCount
   local inv = 1 / count
+  -- Longitudinal force: pushed into the tread nodes it reaches the rim only through BeamNG's soft tyre carcass, and with a stiff
+  -- brush spring that loop rings (a free-rolling wheel swung by +-0.3 slip ratio on the test sled and the lateral force starved).
+  -- So, as in the FULL modes, it acts at the hub (where it reaches the car) and its torque spins the rim directly.
+  local rimOk = false
+  if P.brushRimTorque then
+    if s.rimNodes == nil and not s.rimTried then s.rimTried = true; setupRimPairs(s) end
+    rimOk = s.rimNodes ~= nil
+  end
   local t = 0
   if s.sumX2 > 1e-5 then
     t = P.trail * max(0, 1 - abs(Fy) / FmaxY)
@@ -1232,9 +1341,18 @@ local function stepWheel(s, dt, refPos, doPatch)
   local tk = t / (s.sumX2 + 1e-12)
   for i = 1, count do
     local wy = inv - tk * s.patchX[i]
-    local px = FxTotal * inv
+    local px = rimOk and 0 or FxTotal * inv
     local py = Fy * wy
     obj:applyForceVector(s.patch[i], vec3(fx * px + lx * py, fy * px + ly * py, fz * px + lz * py))
+  end
+  if rimOk then
+    local half = FxTotal * 0.5
+    obj:applyForceVector(s.n1, vec3(fx * half, fy * half, fz * half))
+    obj:applyForceVector(s.n2, vec3(fx * half, fy * half, fz * half))
+    -- torque of the contact force about the axle: -F * (hub height), about a = normal x forward (forward rolling is positive)
+    local nx, ny, nz = s.nx, s.ny, s.nz
+    local tau = -FxTotal * max(s.hubHeight or 0, 0.05)
+    spinCouple(s, ny * fz - nz * fy, nz * fx - nx * fz, nx * fy - ny * fx, tau)
   end
 end
 
@@ -1317,6 +1435,9 @@ local function sendTelemetry()
         Fz = ps.normalForce, Fx = ps.Fx, Fy = ps.Fy, fz0 = ps.fz0,
       }
     end
+    if P.advBrush and s.advT then
+      wl[i].surfT, wl[i].treadT, wl[i].wear = s.advT, s.advT, s.advWear or 0   -- one node: the same temperature everywhere
+    end
     local st = P.useRbr102 and s.rbrState
     if st then
       local surfAvg = 0
@@ -1343,6 +1464,8 @@ local function sendTelemetry()
   -- the mean over the graphics frames since the last report (a single sample of this signal is mostly noise)
   if nativeOn and rackN > 0 then data.rack = rackAcc / rackN end
   rackAcc, rackN = 0, 0
+  -- the test sled's controller (rig.lua) reports the total tyre force it measures when a rig run is active
+  if modelTire_rig and modelTire_rig.report then data.rig = modelTire_rig.report() end
   data.rbrTyreList = tyreChoices()
   if fullIsOn and P.fullModel == "svj" then
     data.model = svjTyre and ((P.svjModded and "FULL Modded SVJ Pacejka " or "FULL SVJ Pacejka ") .. tostring(svjTyre.modelName) .. ": " .. tostring(svjTyre.name))
@@ -1357,6 +1480,7 @@ local function sendTelemetry()
     local _, key = rbrTyreType()
     data.model = "RBR 1.02, " .. (usingRbrData() and "RBR data, " or "own data, ") .. key:gsub("^rbr:", "")
   end
+  if P.advBrush and not P.useRbr102 and not fullIsOn then data.model = "Advanced brush" end
   data.groundKind = groundKind
   if W[1] then data.wheelInfo = {radius = W[1].radius, width = W[1].tireWidth or 0, hubRadius = W[1].hubRadius or 0} end
   obj:queueGameEngineLua("if modelTire_ui then modelTire_ui.onTelemetry(" .. serialize(data) .. ") end")
@@ -1496,7 +1620,7 @@ local function onDebugDraw(focusPos)
 end
 
 local function onReset()
-  for _, s in ipairs(W) do s.dx, s.dy, s.patchCount, s.rbrState, s.age, s.pacState = 0, 0, 0, nil, 0, nil end
+  for _, s in ipairs(W) do s.dx, s.dy, s.patchCount, s.rbrState, s.age, s.pacState = 0, 0, 0, nil, 0, nil; s.advT, s.advWear = nil, nil end
   -- a reset reapplies the jbeam friction, so turn ours back on
   if enabled then setNativeFriction(P.nativeFriction) end
 end
@@ -1547,6 +1671,8 @@ M.setRbrCustom = function(list)
   rbrTyreCache, scaledCache = {}, {}
 end
 M.setNative = function(on) nativeOn = on and true or false end
+-- the advanced brush's tyres back to the air temperature and new
+M.resetAdv = function() for _, s in ipairs(W) do s.advT, s.advWear = nil, nil end end
 M._wheels = function() return W end
 
 M.onPhysicsStep = onPhysicsStep

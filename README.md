@@ -58,14 +58,24 @@ something the native tyre has no equivalent of; the Pacejka tyre makes it possib
 | 2 | **Full RBR tyre** | the RBR contact model | yes |
 | 3 | **Full SVJ Pacejka tyre** | the Pacejka vertical spring | yes |
 | 4 | SVJ Pacejka tyre on BeamNG's tyre | BeamNG's tyre | no |
+| 5 | **Advanced brush** | BeamNG's tyre | no |
 
-- **Light modes (0, 1, 4)** keep BeamNG's soft tyre touching the ground and carrying the load. Only the grip comes from the
+- **Light modes (0, 1, 4, 5)** keep BeamNG's soft tyre touching the ground and carrying the load. Only the grip comes from the
   Lua model. BeamNG's tyre flexes in series with the model, so the car feels softer at the first moment of a turn ("double
   flex").
 - **Full modes (2, 3)** take the tyre ring out of the ground contact when the vehicle is loaded (it is marked
   non-colliding while the JBeam compiles). The tyre model measures the hub's height over the ground and computes the load,
   the sinking into loose ground and the grip itself. The rim keeps its collision as a safety stop. Switching a full mode on
   or off needs "Reload vehicle".
+- **Advanced brush (5)** is the test tyre (mode 0, a brush model with relaxation lengths and a friction ellipse) with the things a
+  real tyre does on top, all from published tyre physics: its stiffness per newton falls as the load rises (the same shape as the
+  Magic Formula's stiffness-against-load term), the stiffness and the grip follow the tyre's own pressure (read from BeamNG's tyre),
+  the grip depends on the tyre temperature (best at about 75 C, falling towards 70 % when cold or overheated) and the tyre heats up
+  from sliding friction and from rolling, cools with the speed, and wears from the same friction (up to 25 % less grip when worn
+  out, faster when overheated). The temperature and wear show in the live data table; "Reset tyre temperature and wear" starts
+  again, and `advTimeScale` runs heating and wear faster to see them in a short test. At the nominal load, pressure and temperature
+  it gives the brush's force, so it is the brush plus those effects, not a different tyre. The offline bench can run it
+  (`--modes brush,adv_brush`, and `--thermal 300 --thermal-slip 6` for a heating test).
 - **Modded Pacejka:** tick `svjModded` in mode 3 or 4 to add a hydroplaning layer. Above a critical speed (about 95 km/h at
   2.2 bar, higher with deep grooves, lower for wide tyres) a wet road lifts part of the contact on a wedge of water and grip and
   cornering stiffness collapse with speed. Water comes from the ground model or from a depth you set.
@@ -177,6 +187,28 @@ own force; BeamNG's native tyre gives no per-wheel force, so a vanilla run is an
 the **steering rack force**, rebuilt from the steering hydros because the game computes its own force-feedback value only when
 a force-feedback wheel is connected. Runs are saved as CSV in `.../current/modelTire/sweeps/`. A steering run stops when the
 car spins (slip angle above 30 degrees).
+
+**Test sled (in-game rig).** The mod ships a minimal vehicle, "ModelTire test sled": a box on four identical wheels (the game's
+205/55R16 tyre), each on its own spring and damper, with adjustable ballast and tyre pressure. Nothing else touches the ground, so
+the load on the wheels is exactly its weight. Spawn it on a large flat area, sit in it, and pick the sweep test "rig slip ramp". A
+controller (`rig.lua`) moves the sled at the chosen speed, holds its heading, and turns the direction of travel from 0 to the
+chosen slip angle, so the slip angle is exactly what you set. It pushes at ground level, which cancels the roll and pitch couples,
+and the force it has to supply to hold that velocity is the opposite of the tyres' total force: a ground-truth measurement that
+works for any tyre, BeamNG's own included. The plots then compare the modes on the same load and slip with nothing else in the
+way. The rig is new and has been run in the game only in an earlier two-wheel form: expect to adjust it.
+
+**Automatic test and report (all in the game).** "Automatic test + report ..." (next to the sweep button) runs the sled's slip ramp for
+every tyre model and surface you tick, one after the other, with no input from you. For every run it sets the mode and the surface,
+reloads the vehicle (a run can capsize the sled, and the FULL modes need the reload anyway), waits for the tyre to be ready, puts the
+sled back at its start pose, runs the ramp and keeps the result in `.../current/modelTire/sweeps/batch_<date>/` (one CSV per run plus
+`manifest.json`). The FULL RBR tyre runs on its 19 surfaces, the FULL SVJ Pacejka tyre on its 8; BeamNG's own tyre and the modes that
+keep BeamNG's tyre on the ground run once on the ground under the sled (the game decides that material; to compare them on another one,
+move the sled to another patch and run again). A full run of everything takes about 15 minutes. The window shows the progress and,
+line by line, the result of every finished run (peak grip, slip at the peak, grip at the end, how much of the peak is kept); the
+runs also appear as curves in the sweep window. When the test ends the game writes `report.html` (setup, summary table, plots of the
+tyre models and of every surface, the runs that failed and why) and `summary.csv` into the batch folder, and "Open report" opens it in
+your browser. Nothing outside the game is needed. `tools/report.py "<batch folder>"` (Python and matplotlib) makes a richer version of
+the same report, and merges several folders.
 
 **Offline bench.** `tools/bench` runs the real wheel code against a fake wheel and flat ground, without the game
 (`pip install lupa matplotlib`):

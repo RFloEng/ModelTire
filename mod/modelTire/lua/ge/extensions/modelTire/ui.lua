@@ -5,7 +5,7 @@
 -- Licence: GPL-3.0-or-later.
 
 local M = {}
-M.dependencies = {"ui_imgui", "modelTire_svj", "modelTire_graphs", "modelTire_sweep"}
+M.dependencies = {"ui_imgui", "modelTire_svj", "modelTire_graphs", "modelTire_sweep", "modelTire_batch"}
 
 local im = ui_imgui
 local ffi = require("ffi")
@@ -20,9 +20,10 @@ local forceScale = im.FloatPtr(0.25)   -- metres of arrow per kN
 
 -- Modes -------------------------------------------------------------------------------------------------------
 -- 0 test tyre (brush)  1 RBR tyre on BeamNG's tyre  2 FULL RBR tyre  3 FULL SVJ Pacejka tyre  4 SVJ Pacejka on BeamNG's tyre
+-- 5 advanced brush (the brush with load, pressure, temperature and wear)
 local function isFull(m) return m == 2 or m == 3 end
 local function isSvj(m) return m == 3 or m == 4 end
-local modeOrder = {0, 1, 4, 2, 3}
+local modeOrder = {0, 5, 1, 4, 2, 3}
 local modePtr = im.IntPtr(0)
 local function mode() return modePtr[0] end
 local modeNames = {
@@ -31,6 +32,7 @@ local modeNames = {
   [2] = "FULL RBR tyre",
   [3] = "FULL SVJ Pacejka tyre",
   [4] = "SVJ Pacejka tyre on BeamNG's tyre",
+  [5] = "Advanced brush (load, pressure, temperature, wear)",
 }
 local modeHelp = {
   [0] = "A simple brush tyre that replaces BeamNG's grip. Only to test that a Lua tyre can drive the car.",
@@ -42,6 +44,9 @@ local modeHelp = {
     .. "(see the tyre list below). Needs 'Reload vehicle'.",
   [4] = "The Pacejka Magic Formula tyre of an SVJ file computes the grip, but BeamNG's own soft tyre still touches the "
     .. "ground and carries the load, as in mode 1. Needs no vehicle reload.",
+  [5] = "The brush tyre of the test mode with the things a real tyre does on top: its stiffness per N falls as the load rises, "
+    .. "it follows the tyre's pressure, grip depends on temperature (best at about 75 C) and the tyre heats up and wears from sliding. "
+    .. "BeamNG's own tyre still carries the load, as in mode 1. Needs no vehicle reload.",
 }
 
 -- Settings ----------------------------------------------------------------------------------------------------
@@ -52,7 +57,7 @@ local paramDefs = {
   {"rbrGripScale", "f", 0.3, 1.5, 0.95, G_TUNE, {1, 2},
     "Multiplies all RBR surface grip. RBR tarmac grips at about mu 1.4-1.5, more than most BeamNG tyres, so a car "
     .. "can roll over in corners. 1.0 = RBR's own numbers; 0.6-0.8 feels closer to BeamNG cars."},
-  {"fzFilterMs", "f", 0, 60, 15, G_STAB, {0, 1, 4},
+  {"fzFilterMs", "f", 0, 60, 15, G_STAB, {0, 1, 4, 5},
     "Smoothing of the load BeamNG reports for the wheel, in milliseconds. BeamNG's contact load is noisy; a friction "
     .. "limit that follows it makes a parked car creep or slide a little. Higher = steadier at low speed, a bit slower "
     .. "to react to load changes (0 = off)."},
@@ -160,25 +165,44 @@ local paramDefs = {
   {"debugDraw", "b", nil, nil, true, G_ADV, {1, 2, 3, 4},
     "Draw force lines at each wheel: green = gripping, red = sliding, blue = load."},
   -- test tyre and the patch used by modes 0 and 1
-  {"mu", "f", 0.3, 2.0, 1.10, G_TEST, {0}, "Test tyre: peak friction coefficient."},
-  {"muSlide", "f", 0.2, 2.0, 0.85, G_TEST, {0}, "Test tyre: friction coefficient when sliding fast."},
-  {"stribeckVel", "f", 0.2, 10.0, 2.5, G_TEST, {0}, "Test tyre: slip speed (m/s) over which grip falls from peak to sliding."},
-  {"muLongScale", "f", 0.7, 1.4, 1.05, G_TEST, {0}, "Test tyre: longitudinal grip relative to sideways grip."},
-  {"loadSens", "f", 0.0, 0.5, 0.12, G_TEST, {0}, "Test tyre: how much grip drops as the load rises."},
-  {"fzNominal", "f", 1000, 8000, 3500, G_TEST, {0}, "Test tyre: load in N where the grip numbers apply."},
-  {"cornerCoef", "f", 4, 60, 28, G_TEST, {0}, "Test tyre: cornering stiffness per N of load. The sideways force peaks at about 3 x mu / this number radians of slip angle."},
-  {"longCoef", "f", 4, 60, 30, G_TEST, {0}, "Test tyre: longitudinal slip stiffness per N of load. The force peaks at about 3 x mu / this number of slip ratio."},
-  {"relaxLenY", "f", 0.05, 1.0, 0.35, G_TEST, {0}, "Test tyre: distance (m) the sideways force takes to build up."},
-  {"relaxLenX", "f", 0.03, 0.6, 0.15, G_TEST, {0}, "Test tyre: distance (m) the longitudinal force takes to build up."},
-  {"dampRatio", "f", 0.0, 2.0, 0.5, G_TEST, {0}, "Test tyre: damping of the carcass spring."},
-  {"trail", "f", 0.0, 0.08, 0.035, G_TEST, {0}, "Test tyre: pneumatic trail in m (self-aligning torque)."},
-  {"crr", "f", 0.0, 0.05, 0.012, G_TEST, {0, 1, 4}, "Rolling resistance coefficient."},
-  {"nativeFriction", "f", 0.0, 1.0, 0.0, G_TEST, {0, 1, 4}, "Fraction of BeamNG's own tyre grip that is kept (0 = off)."},
-  {"patchBand", "f", 0.002, 0.05, 0.012, G_TEST, {0, 1, 4}, "Height band (m) of the tyre nodes that count as the contact patch."},
-  {"maxPatchNodes", "i", 1, 16, 6, G_TEST, {0, 1, 4}, "Most nodes used in the contact patch."},
-  {"patchEverySteps", "i", 1, 20, 4, G_TEST, {0, 1, 4}, "Re-select the patch nodes every N physics steps."},
-  {"slipFromTread", "b", nil, nil, false, G_TEST, {0}, "Test tyre: take slip from the tread nodes instead of hub and wheel speed."},
-  {"fzFallback", "b", nil, nil, false, G_TEST, {0, 1, 4}, "If BeamNG reports no wheel load, use the car's static weight share."},
+  {"mu", "f", 0.3, 2.0, 1.10, G_TEST, {0, 5}, "Test tyre: peak friction coefficient."},
+  {"muSlide", "f", 0.2, 2.0, 0.85, G_TEST, {0, 5}, "Test tyre: friction coefficient when sliding fast."},
+  {"stribeckVel", "f", 0.2, 10.0, 2.5, G_TEST, {0, 5}, "Test tyre: slip speed (m/s) over which grip falls from peak to sliding."},
+  {"muLongScale", "f", 0.7, 1.4, 1.05, G_TEST, {0, 5}, "Test tyre: longitudinal grip relative to sideways grip."},
+  {"loadSens", "f", 0.0, 0.5, 0.12, G_TEST, {0, 5}, "Test tyre: how much grip drops as the load rises."},
+  {"fzNominal", "f", 1000, 8000, 3500, G_TEST, {0, 5}, "Test tyre: load in N where the grip numbers apply."},
+  {"cornerCoef", "f", 4, 60, 28, G_TEST, {0, 5}, "Test tyre: cornering stiffness per N of load. The sideways force peaks at about 3 x mu / this number radians of slip angle."},
+  {"longCoef", "f", 4, 60, 30, G_TEST, {0, 5}, "Test tyre: longitudinal slip stiffness per N of load. The force peaks at about 3 x mu / this number of slip ratio."},
+  {"relaxLenY", "f", 0.05, 1.0, 0.35, G_TEST, {0, 5}, "Test tyre: distance (m) the sideways force takes to build up."},
+  {"relaxLenX", "f", 0.03, 0.6, 0.15, G_TEST, {0, 5}, "Test tyre: distance (m) the longitudinal force takes to build up."},
+  {"dampRatio", "f", 0.0, 2.0, 0.5, G_TEST, {0, 5}, "Test tyre: damping of the carcass spring."},
+  {"trail", "f", 0.0, 0.08, 0.035, G_TEST, {0, 5}, "Test tyre: pneumatic trail in m (self-aligning torque)."},
+  {"crr", "f", 0.0, 0.05, 0.012, G_TEST, {0, 1, 4, 5}, "Rolling resistance coefficient."},
+  {"brushRimTorque", "b", nil, nil, true, G_TEST, {0, 5}, "Test tyre and advanced brush: apply the longitudinal force at the hub and its wheel-spin torque directly on the rim nodes (as the FULL modes do) instead of in the tread nodes. Off = the old way, which makes the wheel speed ring on a stiff test tyre."},
+  {"nativeFriction", "f", 0.0, 1.0, 0.0, G_TEST, {0, 1, 4, 5}, "Fraction of BeamNG's own tyre grip that is kept (0 = off)."},
+  {"patchBand", "f", 0.002, 0.05, 0.012, G_TEST, {0, 1, 4, 5}, "Height band (m) of the tyre nodes that count as the contact patch."},
+  {"maxPatchNodes", "i", 1, 16, 6, G_TEST, {0, 1, 4, 5}, "Most nodes used in the contact patch."},
+  {"patchEverySteps", "i", 1, 20, 4, G_TEST, {0, 1, 4, 5}, "Re-select the patch nodes every N physics steps."},
+  {"slipFromTread", "b", nil, nil, false, G_TEST, {0, 5}, "Test tyre: take slip from the tread nodes instead of hub and wheel speed."},
+  {"fzFallback", "b", nil, nil, false, G_TEST, {0, 1, 4, 5}, "If BeamNG reports no wheel load, use the car's static weight share."},
+  -- Advanced brush
+  {"advLoadShape", "f", 0.5, 6.0, 2.0, G_TEST, {5}, "Advanced brush: how the stiffness per N falls as the load rises. 0.5 = a lot, 6 = hardly (linear)."},
+  {"advPressureNom", "f", 100, 350, 200, G_TEST, {5}, "Advanced brush: tyre pressure in kPa (gauge) where the stiffness and grip numbers apply. The pressure is read from BeamNG's tyre."},
+  {"advPressureK", "f", 0.0, 1.5, 0.6, G_TEST, {5}, "Advanced brush: the stiffness follows (pressure / nominal) to this power."},
+  {"advPressureMu", "f", 0.0, 2.0, 0.4, G_TEST, {5}, "Advanced brush: grip lost for a pressure away from the nominal (squared)."},
+  {"advTopt", "f", 40, 120, 75, G_TEST, {5}, "Advanced brush: tyre temperature (deg C) with the best grip."},
+  {"advTwidth", "f", 10, 80, 35, G_TEST, {5}, "Advanced brush: how far from the best temperature (deg C) the grip falls off (gaussian width)."},
+  {"advTfloor", "f", 0.2, 1.0, 0.7, G_TEST, {5}, "Advanced brush: grip factor of a tyre far too cold or too hot."},
+  {"advTamb", "f", -20, 50, 20, G_TEST, {5}, "Advanced brush: air temperature (deg C): tyres cool towards it."},
+  {"advTstart", "f", -20, 120, 75, G_TEST, {5}, "Advanced brush: the temperature a tyre starts at, and returns to with the reset button (deg C)."},
+  {"advHeatCap", "f", 1000, 30000, 6000, G_TEST, {5}, "Advanced brush: heat capacity of the tyre that heats up (J/K): a bigger number heats and cools more slowly."},
+  {"advHeatShare", "f", 0.02, 1.0, 0.15, G_TEST, {5}, "Advanced brush: share of the sliding friction power that heats the tyre."},
+  {"advRollHeat", "f", 0.0, 0.05, 0.012, G_TEST, {5}, "Advanced brush: rolling heat in W per N of load per m/s of wheel speed."},
+  {"advCoolBase", "f", 1, 40, 8, G_TEST, {5}, "Advanced brush: cooling at rest in W/K."},
+  {"advCoolSpeed", "f", 0, 5, 1.2, G_TEST, {5}, "Advanced brush: extra cooling in W/K per m/s of speed."},
+  {"advTimeScale", "f", 1, 100, 1, G_TEST, {5}, "Advanced brush: heating, cooling and wear run this many times faster (to see them in a short test)."},
+  {"advWearJ", "f", 2e5, 5e7, 1.2e7, G_TEST, {5}, "Advanced brush: sliding friction energy (J) that wears the tread out."},
+  {"advWearLoss", "f", 0.0, 0.6, 0.25, G_TEST, {5}, "Advanced brush: grip lost with the tread worn out."},
 }
 local ptrs, defs = {}, {}
 for _, d in ipairs(paramDefs) do
@@ -254,7 +278,8 @@ local function currentParams()
   local t = {}
   for _, d in ipairs(paramDefs) do t[d[1]] = ptrs[d[1]][0] end
   local m = mode()
-  t.useRbr102 = m >= 1
+  t.useRbr102 = m >= 1 and m ~= 5
+  t.advBrush = (m == 5)
   t.fullTyre = isFull(m)
   t.fullModel = (m == 3) and "svj" or "rbr"
   t.lightModel = (m == 4) and "svj" or "rbr"
@@ -644,6 +669,43 @@ local function setMode(newMode)
   pushParams()
 end
 
+-- Used by the automatic test (batch.lua): sets the tyre mode and the ground surface without the window.
+-- setup: {vanilla = true} (Lua tyre off) or {mode = 0..4, fullSurface = "Tarmac_Fine_Clean_Dry", svjSurface = "Dry asphalt"}, plus
+-- forceReload = true to reload the vehicle whatever the mode.
+-- Returns true when the vehicle had to be reloaded (a FULL mode was switched on or off); the reload is started here and the
+-- tyre switches itself on again afterwards (onUpdate), so the caller waits for the telemetry to say so.
+local function testSetup(s)
+  local before = fullTyre[0]
+  if s.vanilla then
+    if fullTyre[0] then setMode(1) end     -- leaving a FULL mode: the flag must go so that the reload gives the tyre ring its collision back
+    wantEnabled[0] = false
+  else
+    wantEnabled[0] = true
+    autoSurface[0] = false                 -- the surface under test is the one named, not the one under the map
+    for k, name in ipairs(fullSurfaces) do if name == s.fullSurface then fullSurfaceIdx = k end end
+    for k, sfc in ipairs(svjSurfaces) do if sfc[1] == s.svjSurface then svjSurfaceIdx = k end end
+    setMode(s.mode)
+  end
+  applyEnabled()
+  local reload = reloadHint or (fullTyre[0] ~= before) or s.forceReload   -- the automatic test reloads before every run
+  if reload then
+    reloadHint = false
+    if core_vehicle_manager then core_vehicle_manager.reloadVehicle(0) end
+    telemetry = nil
+    telemetryAge = 999
+  end
+  return reload
+end
+
+-- what the automatic test needs to know about the current setup
+local function testInfo()
+  local e = svjSelected()
+  local names = {}
+  for _, sfc in ipairs(svjSurfaces) do names[#names + 1] = sfc[1] end
+  return {fullSurfaces = fullSurfaces, svjSurfaces = names, svjTyre = e and e.key or nil, svjFile = e and e.file or nil,
+    rbrTyre = ptrs.rbrTyre and ptrs.rbrTyre[0] or nil, svjGripScale = svjGripScale[0], rbrGripScale = ptrs.rbrGripScale and ptrs.rbrGripScale[0] or nil}
+end
+
 local function drawLiveData(live)
   if not (live and telemetry.enabled and telemetry.wheels) then return end
   im.Columns(11, "rbrTyreWheels", true)
@@ -896,6 +958,10 @@ local function drawWindow()
 
   -- outside the greyed area: the sweep tests also run with the Lua tyre off (the BeamNG vanilla reference run)
   if modelTire_sweep and im.Button("Sweep tests (in-game) ...") then modelTire_sweep.toggle() end
+  if modelTire_batch then
+    im.SameLine()
+    if im.Button("Automatic test + report ...") then modelTire_batch.toggle() end
+  end
   helpMark("Opens a window that drives the car by itself (steering, braking or throttle ramp) and plots the result, to compare "
     .. "tyre modes, BeamNG's own tyre and the theoretical Pacejka curve. Works with the Lua tyre off too: that run is the "
     .. "BeamNG vanilla reference.")
@@ -909,6 +975,10 @@ local function drawWindow()
       tip(modeHelp[m])
     end
     im.TextWrapped(modeHelp[mode()])
+    if mode() == 5 then
+      if im.Button("Reset tyre temperature and wear") then sendToVehicle("modelTire_tyre.resetAdv()") end
+      im.TextDisabled("The tyres start at the air temperature and new. Raise 'advTimeScale' to see them heat up and wear in a short test.")
+    end
     if isFull(mode()) then
       if im.Checkbox("rim keeps ground collision (safety stop)", fullRimCollision) then reloadHint = true end
       helpMark("The wheel rim is much smaller than the tyre and never touches the ground in normal driving; with this "
@@ -1010,6 +1080,7 @@ local function onTelemetry(data)
   telemetry = data
   telemetryAge = 0
   if modelTire_sweep then modelTire_sweep.onTelemetry(data) end
+  if modelTire_batch then modelTire_batch.onTelemetry(data) end
 end
 
 local function onUpdate(dtReal)
@@ -1023,6 +1094,7 @@ local function onUpdate(dtReal)
   end
   if windowOpen[0] then drawWindow() end
   if modelTire_sweep then modelTire_sweep.update(dtReal); modelTire_sweep.draw() end
+  if modelTire_batch then modelTire_batch.update(dtReal); modelTire_batch.draw() end
   if modelTire_graphs then
     modelTire_graphs.draw(telemetry, telemetry and telemetry.enabled and telemetryAge < 0.5 or false)
   end
@@ -1069,6 +1141,8 @@ M.onPreRender = onPreRender
 M.onTelemetry = onTelemetry
 M.probeGround = probeGround
 M.toggleWindow = toggleWindow
+M.testSetup = testSetup
+M.testInfo = testInfo
 M.onVehicleSwitched = onVehicleSwitched
 
 return M

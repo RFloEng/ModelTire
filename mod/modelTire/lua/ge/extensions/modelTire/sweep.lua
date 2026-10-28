@@ -19,13 +19,17 @@ M.dependencies = {"ui_imgui"}
 
 local im = ui_imgui
 
-local KINDS = {"steering ramp", "braking ramp", "throttle ramp"}
+local KINDS = {"steering ramp", "braking ramp", "throttle ramp", "rig slip ramp"}
 local kindIdx = 1
+local RIG_KIND = "rig slip ramp"
+-- lateral kinds plot force against slip angle; the others against slip ratio
+local function isLat(kind) return kind == "steering ramp" or kind == RIG_KIND end
 local VIEWS = {"car (total)", "per axle", "per wheel"}
 local viewIdx = 1
 local targetKmh = im.FloatPtr(55)
 local duration = im.FloatPtr(12)
 local steerMax = im.FloatPtr(0.45)
+local rigSlipMax = im.FloatPtr(20)
 local winOpen = im.BoolPtr(false)
 
 local state = "idle"          -- idle | accelerate | run
@@ -34,6 +38,7 @@ local status = "idle"
 local current = nil            -- the run being recorded
 local runs = {}                -- finished runs, each {label, kind, samples = {...}, color, visible}
 local newSample = false
+local lastResult = nil           -- the outcome of the last run: {ok, reason, samples, path, run}; read by the automatic test (batch.lua)
 local lastTelemetry = nil
 local latestSpeed = 0
 
@@ -73,45 +78,134 @@ local function modeLabel(tel)
   return m
 end
 
+local curve   -- (defined below; finish needs it)
+
 local function finish(reason)
+  if current and current.rig then
+    local veh = playerVehicle()
+    if veh then veh:queueLuaCommand("if modelTire_rig then modelTire_rig.stop() end") end
+  end
   releaseInputs()
   if current and #current.samples > 3 then
     current.color = COLORS[(#runs % #COLORS) + 1]
     current.visible = true
     runs[#runs + 1] = current
     -- keep the CSV next to the other mod data
-    local lines = {"t,speed,steer,throttle,brake,ay_ms2,ax_ms2,rack_N,wheel,slip_angle_rad,slip_ratio,Fz,Fx,Fy"}
+    local lines = {"t,speed,steer,throttle,brake,ay_ms2,ax_ms2,rack_N,rig_Fx,rig_Fy,rig_load,wheel,slip_angle_rad,slip_ratio,Fz,Fx,Fy,slip_vx,slip_vy,mu,treadT,wear"}
     for _, s in ipairs(current.samples) do
       for _, w in ipairs(s.w) do
-        lines[#lines + 1] = string.format("%.2f,%.2f,%.3f,%.3f,%.3f,%.3f,%.3f,%.1f,%s,%.4f,%.4f,%.0f,%.0f,%.0f", s.t, s.v, s.steer, s.throttle,
-          s.brake, s.acc[1], s.acc[2], s.rack or 0, tostring(w.name), w.alpha or 0, w.kappa or 0, w.Fz or 0, w.Fx or 0, w.Fy or 0)
+        lines[#lines + 1] = string.format("%.2f,%.2f,%.3f,%.3f,%.3f,%.3f,%.3f,%.1f,%.0f,%.0f,%.0f,%s,%.4f,%.4f,%.0f,%.0f,%.0f,%.3f,%.3f,%.3f,%.1f,%.4f", s.t, s.v, s.steer, s.throttle,
+          s.brake, s.acc[1], s.acc[2], s.rack or 0, s.rig and s.rig.Fx or 0, s.rig and s.rig.Fy or 0, s.rig and s.rig.load or 0, tostring(w.name), w.alpha or 0, w.kappa or 0, w.Fz or 0, w.Fx or 0, w.Fy or 0,
+          w.sx or 0, w.sy or 0, w.mu or 0, w.treadT or 0, w.wear or 0)
       end
     end
     local name = string.format("%s_%s_%d", (current.label:gsub("[^%w]+", "_")), (current.kind:gsub("%s", "_")), #runs)
-    local path = "/modelTire/sweeps/" .. name .. ".csv"
+    local dir = "modelTire/sweeps"
+    -- a run of the automatic test goes into its own folder under a name that says what it was
+    if current.batch and current.batch.dir then
+      dir = "modelTire/sweeps/" .. current.batch.dir
+      name = current.batch.tag
+    end
+    local path = "/" .. dir .. "/" .. name .. ".csv"
     local ok = pcall(function()
-      if FS and FS.directoryCreate then FS:directoryCreate("modelTire/sweeps", true) end
+      if FS and FS.directoryCreate then FS:directoryCreate(dir, true) end
       writeFile(path, table.concat(lines, "\n"))
     end)
     status = string.format("%s: %d samples recorded%s", reason, #current.samples, ok and (" (saved " .. path .. ")") or " (kept in memory only)")
+    -- the spread of each wheel's slip ratio over the run (a free-rolling wheel should stay near 0: a large value is a wheel speed
+    -- that rings, which starves the lateral force)
+    local byw, kn, ksum = {}, 0, 0
+    for _, smp in ipairs(current.samples) do
+      for i, w in ipairs(smp.w) do
+        local b = byw[i] or {0, 0, 0}
+        byw[i] = b
+        local k = w.kappa or 0
+        b[1], b[2], b[3] = b[1] + 1, b[2] + k, b[3] + k * k
+      end
+    end
+    for _, b in pairs(byw) do
+      local m = b[2] / b[1]
+      ksum, kn = ksum + math.sqrt(math.max(0, b[3] / b[1] - m * m)), kn + 1
+    end
+    lastResult = {ok = (reason == "finished") and ok, kappaSd = kn > 0 and ksum / kn or nil, reason = reason, samples = #current.samples, path = ok and path or nil,
+      label = current.label, surface = current.surface, model = current.model, staticLoad = current.staticLoad,
+      curve = current.rig and curve(current, true) or nil}   -- {slip deg, lateral force / load}, for the automatic test's report
   else
     status = reason .. " (nothing recorded)"
+    lastResult = {ok = false, reason = reason, samples = current and #current.samples or 0}
   end
   current = nil
   state = "idle"
 end
 
-local function start()
+local function start(batch)
   local veh = playerVehicle()
+  lastResult = nil
   if not veh then status = "no player vehicle"; return end
+  local rig = KINDS[kindIdx] == RIG_KIND
+  if rig then
+    local jb = veh.jbeam
+    if jb == nil and veh.getJBeamFilename then jb = veh:getJBeamFilename() end
+    if jb ~= "modelTire_rig" then
+      status = "the rig test needs the ModelTire test sled: spawn it (vehicle selector, 'ModelTire test sled') and sit in it"
+      return
+    end
+  end
   -- the Lua tyre may be on (a tyre mode) or off (BeamNG's own tyre: the "vanilla" reference run)
   setNative(true)
   current = {label = modeLabel(lastTelemetry), kind = KINDS[kindIdx], samples = {}, staticLoad = nil,
-    native = not (lastTelemetry and lastTelemetry.enabled), wheelStatic = {},
-    note = string.format("%.0f km/h, %.0f s%s", targetKmh[0], duration[0], KINDS[kindIdx] == "steering ramp" and string.format(", lock %.2f", steerMax[0]) or "")}
-  state = "accelerate"
+    native = not (lastTelemetry and lastTelemetry.enabled), wheelStatic = {}, rig = rig, batch = batch,
+    note = string.format("%.0f km/h, %.0f s%s", targetKmh[0], duration[0], KINDS[kindIdx] == "steering ramp" and string.format(", lock %.2f", steerMax[0])
+      or (rig and string.format(", to %.0f deg", rigSlipMax[0]) or ""))}
   runT, t = 0, 0
+  if rig then
+    -- the sled drives itself (modelTire_rig): speeds up, holds, then ramps the slip angle; this side records
+    veh:queueLuaCommand(string.format("extensions.load('modelTire_rig'); modelTire_rig.run(%.2f, %.2f, %.2f)", targetKmh[0], rigSlipMax[0], duration[0]))
+    state = "accelerate"
+    status = "sled accelerating to " .. string.format("%.0f", targetKmh[0]) .. " km/h"
+    return
+  end
+  state = "accelerate"
   status = "accelerating to " .. string.format("%.0f", targetKmh[0]) .. " km/h"
+end
+
+-- one telemetry report -> a sample of the current run (false when the report lacks the wheels' kinematics)
+local function recordSample(s)
+  local static, n = 0, 0
+  for i, w in ipairs(lastTelemetry.wheels) do
+    if not w.kin then return false end
+    s.w[i] = {name = w.name, Fz = w.Fz, Fx = w.Fx, Fy = w.Fy, alpha = w.kin[1], kappa = w.kin[2], sx = w.sx, sy = w.sy, mu = w.mu, treadT = w.treadT, wear = w.wear}
+    static, n = static + (w.staticLoad or 0), n + 1
+    current.wheelStatic[i] = w.staticLoad
+  end
+  current.samples[#current.samples + 1] = s
+  if n > 0 then current.staticLoad = static / n end
+  current.label = modeLabel(lastTelemetry)
+  current.native = not lastTelemetry.enabled
+  current.fz0 = lastTelemetry.wheels[1] and lastTelemetry.wheels[1].fz0
+  current.surface = lastTelemetry.wheels[1] and lastTelemetry.wheels[1].surface or current.surface
+  current.model = lastTelemetry.model or current.model
+  return true
+end
+
+-- the rig run: the sled controls itself, we wait for its ramp and record
+local function rigUpdate(dt, v)
+  t = t + dt
+  local rg = lastTelemetry and lastTelemetry.rig
+  if rg and rg.phase == "ramp" then
+    if state ~= "run" then state, runT = "run", 0 end
+    runT = runT + dt
+    status = string.format("rig: slip %.1f deg of %.0f", rg.slip or 0, rg.maxSlip or 0)
+    if newSample and lastTelemetry.wheels then
+      newSample = false
+      recordSample({t = runT, v = v, steer = 0, throttle = 0, brake = 0, acc = {0, 0}, rack = nil, w = {},
+        rig = {Fx = rg.Fx, Fy = rg.Fy, load = rg.load, slip = rg.slip}})
+    end
+  elseif rg and rg.phase == "done" and state == "run" then   -- (a "done" left over from the run before does not count: we must have seen the ramp)
+    finish("finished")
+  elseif t > 90 then
+    finish("the sled did not start (is it the active vehicle, with the Lua tyre extension loaded?)")
+  end
 end
 
 -- driving: called every frame with the real time step
@@ -121,6 +215,7 @@ function M.update(dt)
   if not veh then finish("vehicle lost"); return end
   local v = veh:getVelocity():length()
   latestSpeed = v
+  if current and current.rig then rigUpdate(dt, v); return end
   local target = targetKmh[0] / 3.6
   t = t + dt
   -- speed hold: proportional throttle, no brake unless well over
@@ -153,22 +248,7 @@ function M.update(dt)
   current.cmd = {steer = steer, throttle = throttle, brake = brake}
   if newSample and lastTelemetry and lastTelemetry.wheels and lastTelemetry.acc then
     newSample = false
-    local s = {t = runT, v = v, steer = steer, throttle = throttle, brake = brake, acc = lastTelemetry.acc, rack = lastTelemetry.rack, w = {}}
-    local ok = true
-    local static, n = 0, 0
-    for i, w in ipairs(lastTelemetry.wheels) do
-      if not w.kin then ok = false; break end
-      s.w[i] = {name = w.name, Fz = w.Fz, Fx = w.Fx, Fy = w.Fy, alpha = w.kin[1], kappa = w.kin[2]}
-      static, n = static + (w.staticLoad or 0), n + 1
-      current.wheelStatic[i] = w.staticLoad
-    end
-    if ok then
-      current.samples[#current.samples + 1] = s
-      if n > 0 then current.staticLoad = static / n end
-      current.label = modeLabel(lastTelemetry)
-      current.native = not lastTelemetry.enabled
-      current.fz0 = lastTelemetry.wheels[1] and lastTelemetry.wheels[1].fz0
-    end
+    recordSample({t = runT, v = v, steer = steer, throttle = throttle, brake = brake, acc = lastTelemetry.acc, rack = lastTelemetry.rack, w = {}})
   end
   if runT >= duration[0] then finish("finished")
   elseif kind == "braking ramp" and v < 1.5 then finish("stopped")
@@ -193,7 +273,7 @@ end
 -- group: nil = the whole car, else a list of wheel indices (one wheel or an axle). For a Lua tyre run the force of the group
 -- is the tyre's own force over its own load. BeamNG's native tyre gives no force per wheel, so a vanilla run is drawn from
 -- the car's acceleration in g (an estimate that assumes every wheel uses the same share of its grip).
-local function curve(run, lateral, group)
+function curve(run, lateral, group)
   local pts = {}
   for _, s in ipairs(run.samples) do
     local slip, n, f, fz = 0, 0, 0, 0
@@ -214,6 +294,11 @@ local function curve(run, lateral, group)
       local y
       if group and not run.native then
         if fz > 100 then y = math.abs(f) / fz end
+      elseif s.rig then
+        -- the test sled measures the total tyre force itself (the servo force), for every tyre including BeamNG's own;
+        -- both wheels are identical, so a wheel or an axle sees the same force over load
+        local F = lateral and s.rig.Fy or s.rig.Fx
+        if F and (s.rig.load or 0) > 100 then y = math.abs(F) / s.rig.load end
       else
         y = math.abs(lateral and s.acc[1] or s.acc[2]) / 9.81
       end
@@ -274,7 +359,7 @@ local function plot(id, w, h, lateral, xmax, xlabel, ylabel, group, title, quant
   im.ImDrawList_AddRectFilled(dl, im.ImVec2(L, T), im.ImVec2(R, B), col(0.08, 0.09, 0.11, 0.9))
   local curves, ymax = {}, (quantity == "rack") and 100 or 0.5
   for _, r in ipairs(runs) do
-    if r.visible and ((lateral and r.kind == "steering ramp") or (not lateral and r.kind ~= "steering ramp")) then
+    if r.visible and ((lateral and isLat(r.kind)) or (not lateral and not isLat(r.kind))) then
       local c = (quantity == "rack") and rackCurve(r) or curve(r, lateral, group)
       curves[#curves + 1] = {c = c, color = r.color, label = r.label, dotted = group and r.native}
       for _, p in ipairs(c) do if math.abs(p[2]) > ymax then ymax = math.abs(p[2]) end end
@@ -283,7 +368,7 @@ local function plot(id, w, h, lateral, xmax, xlabel, ylabel, group, title, quant
   -- theoretical curve of the selected tyre, from the first visible run's static load
   local ref
   for _, r in ipairs(runs) do
-    if r.visible and ((lateral and r.kind == "steering ramp") or (not lateral and r.kind ~= "steering ramp")) then ref = r; break end
+    if r.visible and ((lateral and isLat(r.kind)) or (not lateral and not isLat(r.kind))) then ref = r; break end
   end
   local theory, theoryName
   if ref and quantity ~= "rack" then theory, theoryName = theoryCurve(lateral, ref, group) end
@@ -327,6 +412,18 @@ local function plot(id, w, h, lateral, xmax, xlabel, ylabel, group, title, quant
 end
 
 -- window ------------------------------------------------------------------------------------------------------------
+-- Automatic test (batch.lua): start one rig run with the given settings; the outcome is read with M.lastResult().
+-- opts: speedKmh, maxSlip (deg), rampSec, dir (folder under modelTire/sweeps), tag (file name without extension).
+function M.runRig(opts)
+  if state ~= "idle" then return false, "a run is already going" end
+  for i, k in ipairs(KINDS) do if k == RIG_KIND then kindIdx = i end end
+  targetKmh[0], rigSlipMax[0], duration[0] = opts.speedKmh or targetKmh[0], opts.maxSlip or rigSlipMax[0], opts.rampSec or duration[0]
+  start({dir = opts.dir, tag = opts.tag})
+  return state ~= "idle", status
+end
+function M.isBusy() return state ~= "idle" end
+function M.lastResult() return lastResult end
+function M.stopRun() if state ~= "idle" then finish("stopped") end end
 function M.toggle() winOpen[0] = not winOpen[0] end
 function M.setView(i) viewIdx = i end
 function M.isOpen() return winOpen[0] end
@@ -345,6 +442,7 @@ function M.draw()
     im.SliderFloat("speed (km/h)", targetKmh, 20, 120, "%.0f")
     im.SliderFloat("ramp duration (s)", duration, 4, 30, "%.0f")
     if KINDS[kindIdx] == "steering ramp" then im.SliderFloat("steering at the end (0-1)", steerMax, 0.1, 1.0, "%.2f") end
+    if KINDS[kindIdx] == RIG_KIND then im.SliderFloat("slip angle at the end (deg)", rigSlipMax, 5, 40, "%.0f") end
     im.PopItemWidth()
     if state == "idle" then
       if im.Button("Start") then start() end
@@ -358,7 +456,7 @@ function M.draw()
     -- the slip axis follows the data (a run can slide past 20 degrees)
     local latMax = 20
     for _, r in ipairs(runs) do
-      if r.visible and r.kind == "steering ramp" then
+      if r.visible and isLat(r.kind) then
         for _, p in ipairs(curve(r, true)) do if p[1] > latMax then latMax = math.min(math.ceil(p[1] / 5) * 5, 45) end end
       end
     end
@@ -390,7 +488,7 @@ function M.draw()
       local hasLat, hasLon = false, false
       for _, r in ipairs(runs) do
         if r.visible then
-          if r.kind == "steering ramp" then hasLat = true else hasLon = true end
+          if isLat(r.kind) then hasLat = true else hasLon = true end
         end
       end
       local pw = (hasLat and hasLon) and 245 or 490

@@ -74,6 +74,7 @@ wheels = {wheelRotators = {[0] = wd}}
 
 local MODES = {
   brush = {useRbr102 = false},
+  adv_brush = {useRbr102 = false, advBrush = true},
   rbr_light = {useRbr102 = true, lightModel = "rbr", rbrUseRbrData = false},
   rbr_full = {useRbr102 = true, fullTyre = true, fullModel = "rbr", rbrUseRbrData = false, fullAutoSurface = false,
     fullSurface = "Tarmac_Fine_Clean_Dry"},
@@ -87,11 +88,23 @@ M.onExtensionLoaded()
 if SVJT then M.setSvjTyre(SVJT) end
 
 -- one step of the rig; returns the summed force on the car
+local SPIN_ON = false
 local function step()
   applied = {}
   M.onPhysicsStep(0.0005)
   local fx, fy, fz = 0, 0, 0
   for _, a in ipairs(applied) do fx, fy, fz = fx + a.f.x, fy + a.f.y, fz + a.f.z end
+  -- a free-spinning wheel (opt.spinInertia, kg m^2): the force on the tyre slows or speeds it up, and the new speed is what the
+  -- next step sees (one step of delay, as in the game). Only for runs at zero imposed slip ratio.
+  if SPIN_ON and opt.spinInertia then
+    local tau = 0      -- torque of all the forces about the axle (+y: forward rolling is positive): r_z f_x - r_x f_z
+    for _, a in ipairs(applied) do
+      local p = pos[a.cid]
+      tau = tau + (p.z - H.z) * a.f.x - p.x * a.f.z
+    end
+    wd.angularVelocity = wd.angularVelocity + tau / opt.spinInertia * 0.0005
+    wd.wheelSpeed = wd.angularVelocity * R
+  end
   return fx, fy, fz
 end
 
@@ -131,12 +144,21 @@ end
 
 local STEPS, AVG = opt.steps or 1500, 200
 local function measure(mode, alpha, kappa, load)
+  SPIN_ON = (kappa == 0)
   if isFull[mode] then GROUND_Z = groundFor(load) else FZ = function() return load end end
   setKinematics(alpha, kappa)
   local sx, sy, sz = 0, 0, 0
+  local kmin, kmax = 9, -9
   for k = 1, STEPS do
     local fx, fy, fz = step()
-    if k > STEPS - AVG then sx, sy, sz = sx + fx, sy + fy, sz + fz end
+    if k > STEPS - AVG then
+      sx, sy, sz = sx + fx, sy + fy, sz + fz
+      local kk = (wd.wheelSpeed - vx) / math.max(vx, 0.5)
+      kmin, kmax = math.min(kmin, kk), math.max(kmax, kk)
+    end
+  end
+  if opt.spinInertia and kappa == 0 and math.abs(alpha - math.rad(10)) < 1e-6 then
+    out[#out + 1] = string.format("%s,spin,%.4f,%.3f,%.3f,0", mode, alpha, kmin, kmax)   -- slip ratio range of the free wheel at 10 degrees
   end
   if opt.debug then local ps = M._wheels()[1].pacState; if ps then out[#out + 1] = string.format('%s,dbg,alpha %.4f kappa %.4f lam %s lamK %s fz0 %s Fz %.0f Dy %.0f Kya %.0f', mode, ps.alpha or 0, ps.kappa or 0, tostring(ps.lam), tostring(ps.lamK), tostring(ps.fz0), ps.normalForce or 0, ps.out.Dy or 0, ps.out.Kya or 0) end end
   -- light modes: BeamNG's own tyre carries the load, so no vertical force comes from the model
@@ -188,5 +210,27 @@ for _, mode in ipairs(list) do
       row(mode, "load", load, fx, fy, fz)
     end
   end
+end
+-- the advanced brush's heating and wear: a steady slip angle at one load for opt.thermal seconds of simulated time, one row
+-- every 5 s: x = time (s), Fx column = tyre temperature (deg C), Fy column = sideways force (N), Fz column = wear in thousandths
+if opt.thermal and opt.thermal > 0 and MODES.adv_brush then
+  local P = {useRbr102 = false, fullTyre = false, advBrush = true, advTimeScale = opt.thermalScale or 1}
+  for k, val in pairs(opt.params or {}) do P[k] = val end
+  M.disable(); M.setParams(P); M.enable(); M.resetAdv()
+  local load = opt.load or NOMINAL
+  FZ = function() return load end
+  setKinematics(math.rad(opt.thermalSlip or 6), 0)
+  local every = math.floor(5 / 0.0005)
+  for k = 1, math.floor(opt.thermal / 0.0005) do
+    local fx, fy = step()
+    if k % every == 0 then
+      local w = M._wheels()[1]
+      row("adv_brush", "thermal", k * 0.0005, w.advT or 0, fy, (w.advWear or 0) * 1000)
+    end
+  end
+end
+if opt.debug then
+  local w1 = M._wheels()[1]
+  out[#out + 1] = string.format("rimdbg,rim,%d,0,0,0", w1 and w1.rimNodes and #w1.rimNodes or -1)
 end
 return table.concat(out, "\n")

@@ -69,6 +69,10 @@ def main():
     ap.add_argument("--param", action="append", default=[], help="tyre.lua parameter, e.g. rbrGripScale=1.0")
     ap.add_argument("--ingame", nargs="*", default=[], help="CSV files saved by the in-game sweep tests (modelTire/sweeps/*.csv)")
     ap.add_argument("--debug", action="store_true", help="also write the load calibration rows")
+    ap.add_argument("--spin-inertia", type=float, default=0, help="free-spinning wheel of this inertia (kg m^2) in the zero-slip-ratio runs: shows longitudinal loop instabilities")
+    ap.add_argument("--thermal", type=float, default=0, help="advanced brush: seconds of a steady-slip heating test (add adv_brush to --modes)")
+    ap.add_argument("--thermal-slip", type=float, default=6.0, help="slip angle (deg) of the heating test")
+    ap.add_argument("--thermal-scale", type=float, default=1.0, help="advTimeScale of the heating test")
     ap.add_argument("--out", default=os.path.join(HERE, "out"))
     a = ap.parse_args()
     os.makedirs(a.out, exist_ok=True)
@@ -87,7 +91,9 @@ def main():
         print("Pacejka tyre:", key)
     params = L.table_from({p.split("=")[0]: parse_value(p.split("=", 1)[1]) for p in a.param})
     opt = L.table_from({"load": a.load, "loads": L.table_from(loads), "speed": a.speed, "radius": a.radius, "material": a.material,
-                        "steps": a.steps, "modes": L.table_from(a.modes.split(",")), "params": params, "debug": a.debug})
+                        "steps": a.steps, "modes": L.table_from(a.modes.split(",")), "params": params, "debug": a.debug,
+                        "thermal": a.thermal, "thermalSlip": a.thermal_slip, "thermalScale": a.thermal_scale,
+                        "spinInertia": (a.spin_inertia or None)})
     run = L.eval("function(path, a, b, c) local f = assert(loadfile(path)); return f(a, b, c) end")
     text = run(os.path.join(HERE, "bench.lua").replace("\\", "/"), MOD, tyre, opt)
     rows = [r.split(",") for r in text.split("\n") if r]
@@ -127,6 +133,31 @@ def main():
             pos = [(x, fx) for x, fx, fy, fz in pts if x > 0]
             peak = max(pos, key=lambda p: p[1])
             print("  %-10s peak %6.0f N at slip %.2f" % (mode, peak[1], peak[0]))
+
+    for r in rows:
+        if r[1] == "spin":
+            print("free wheel, %s at 10 deg: slip ratio between %+.3f and %+.3f over the last 0.1 s" % (r[0], float(r[3]), float(r[4])))
+    # advanced brush heating test
+    th = [(float(r[2]), float(r[3]), -float(r[4]), float(r[5]) / 1000) for r in rows if r[1] == "thermal"]
+    if th:
+        print("\nadvanced brush heating test (%.0f deg slip, load %.0f N, time scale %g):" % (a.thermal_slip, a.load, a.thermal_scale))
+        print("   time s   temperature C   sideways force / load   wear")
+        for tt, T, fy, wr in th[::max(1, len(th) // 12)]:
+            print("   %6.0f   %8.1f        %8.2f             %6.4f" % (tt, T, fy / a.load, wr))
+        import matplotlib
+        matplotlib.use("Agg")
+        import matplotlib.pyplot as plt
+        fig, ax = plt.subplots(figsize=(7, 4))
+        ax.plot([p[0] for p in th], [p[1] for p in th], "C3", label="temperature (C)")
+        ax.set_xlabel("time (s)"); ax.set_ylabel("temperature (C)")
+        ax2 = ax.twinx()
+        ax2.plot([p[0] for p in th], [p[2] / a.load for p in th], "C0", label="Fy / Fz")
+        ax2.plot([p[0] for p in th], [p[3] for p in th], "C2", label="wear")
+        ax2.set_ylabel("Fy / Fz, wear")
+        ax.set_title("Advanced brush: steady %.0f deg slip" % a.thermal_slip)
+        fig.legend(loc="upper right", fontsize=8)
+        fig.savefig(os.path.join(a.out, "thermal.png"), dpi=110, bbox_inches="tight")
+        plt.close(fig)
 
     # pure theoretical Pacejka curve of the same tyre at every load (reference surface, no transient, no combined slip)
     theory = {"lat": {}, "lon": {}}
