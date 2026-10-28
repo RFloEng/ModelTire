@@ -1466,6 +1466,7 @@ local function sendTelemetry()
   rackAcc, rackN = 0, 0
   -- the test sled's controller (rig.lua) reports the total tyre force it measures when a rig run is active
   if modelTire_rig and modelTire_rig.report then data.rig = modelTire_rig.report() end
+  if modelTire_wheelrig and modelTire_wheelrig.report then data.rig = modelTire_wheelrig.report() end     -- (the single-wheel rig)
   data.rbrTyreList = tyreChoices()
   if fullIsOn and P.fullModel == "svj" then
     data.model = svjTyre and ((P.svjModded and "FULL Modded SVJ Pacejka " or "FULL SVJ Pacejka ") .. tostring(svjTyre.modelName) .. ": " .. tostring(svjTyre.name))

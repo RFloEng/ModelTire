@@ -1129,6 +1129,18 @@ local function toggleWindow()
   windowOpen[0] = not windowOpen[0]
 end
 
+-- the single-wheel rig has no way to stand without its controller: load it the moment the vehicle exists
+local function loadRigController(vid)
+  local veh = vid and be:getObjectByID(vid) or nil
+  if not veh then return end
+  local jb = veh.jbeam
+  if jb == nil and veh.getJBeamFilename then jb = veh:getJBeamFilename() end
+  if jb == "modelTire_wheelrig" then veh:queueLuaCommand("extensions.load('modelTire_wheelrig')") end
+end
+
+local function onVehicleSpawned(vid) loadRigController(vid) end
+local function onVehicleReplaced(vid) loadRigController(vid) end
+
 local function onVehicleSwitched()
   telemetry = nil
   telemetryAge = 999
@@ -1144,5 +1156,7 @@ M.toggleWindow = toggleWindow
 M.testSetup = testSetup
 M.testInfo = testInfo
 M.onVehicleSwitched = onVehicleSwitched
+M.onVehicleSpawned = onVehicleSpawned
+M.onVehicleReplaced = onVehicleReplaced
 
 return M

@@ -30,6 +30,10 @@ local targetKmh = im.FloatPtr(55)
 local duration = im.FloatPtr(12)
 local steerMax = im.FloatPtr(0.45)
 local rigSlipMax = im.FloatPtr(20)
+local rigLoad = im.FloatPtr(3500)
+-- the rigs (vehicle name -> name and controller extension): the test sled and the single-wheel rig
+local RIGS = {modelTire_rig = {ext = "modelTire_rig", name = "test sled"},
+  modelTire_wheelrig = {ext = "modelTire_wheelrig", name = "single-wheel rig"}}
 local winOpen = im.BoolPtr(false)
 
 local state = "idle"          -- idle | accelerate | run
@@ -83,7 +87,7 @@ local curve   -- (defined below; finish needs it)
 local function finish(reason)
   if current and current.rig then
     local veh = playerVehicle()
-    if veh then veh:queueLuaCommand("if modelTire_rig then modelTire_rig.stop() end") end
+    if veh then veh:queueLuaCommand("if modelTire_rig then modelTire_rig.stop() end; if modelTire_wheelrig then modelTire_wheelrig.stop() end") end
   end
   releaseInputs()
   if current and #current.samples > 3 then
@@ -152,11 +156,13 @@ local function start(batch)
   lastResult = nil
   if not veh then status = "no player vehicle"; return end
   local rig = KINDS[kindIdx] == RIG_KIND
+  local rigDef = nil
   if rig then
     local jb = veh.jbeam
     if jb == nil and veh.getJBeamFilename then jb = veh:getJBeamFilename() end
-    if jb ~= "modelTire_rig" then
-      status = "the rig test needs the ModelTire test sled: spawn it (vehicle selector, 'ModelTire test sled') and sit in it"
+    rigDef = RIGS[jb]
+    if not rigDef then
+      status = "the rig test needs a ModelTire rig: spawn the test sled or the single-wheel rig (vehicle selector) and sit in it"
       return
     end
   end
@@ -169,9 +175,15 @@ local function start(batch)
   runT, t = 0, 0
   if rig then
     -- the sled drives itself (modelTire_rig): speeds up, holds, then ramps the slip angle; this side records
-    veh:queueLuaCommand(string.format("extensions.load('modelTire_rig'); modelTire_rig.run(%.2f, %.2f, %.2f)", targetKmh[0], rigSlipMax[0], duration[0]))
+    if rigDef.ext == "modelTire_wheelrig" then
+      veh:queueLuaCommand(string.format("extensions.load('modelTire_wheelrig'); modelTire_wheelrig.run(%.2f, %.2f, %.2f, %.0f)",
+        targetKmh[0], rigSlipMax[0], duration[0], rigLoad[0]))
+    else
+      veh:queueLuaCommand(string.format("extensions.load('modelTire_rig'); modelTire_rig.run(%.2f, %.2f, %.2f)", targetKmh[0], rigSlipMax[0], duration[0]))
+    end
+    current.rigName = rigDef.name
     state = "accelerate"
-    status = "sled accelerating to " .. string.format("%.0f", targetKmh[0]) .. " km/h"
+    status = rigDef.name .. " accelerating to " .. string.format("%.0f", targetKmh[0]) .. " km/h"
     return
   end
   state = "accelerate"
@@ -427,6 +439,7 @@ function M.runRig(opts)
   if state ~= "idle" then return false, "a run is already going" end
   for i, k in ipairs(KINDS) do if k == RIG_KIND then kindIdx = i end end
   targetKmh[0], rigSlipMax[0], duration[0] = opts.speedKmh or targetKmh[0], opts.maxSlip or rigSlipMax[0], opts.rampSec or duration[0]
+  rigLoad[0] = opts.load or rigLoad[0]
   start({dir = opts.dir, tag = opts.tag})
   return state ~= "idle", status
 end
@@ -451,7 +464,10 @@ function M.draw()
     im.SliderFloat("speed (km/h)", targetKmh, 20, 120, "%.0f")
     im.SliderFloat("ramp duration (s)", duration, 4, 30, "%.0f")
     if KINDS[kindIdx] == "steering ramp" then im.SliderFloat("steering at the end (0-1)", steerMax, 0.1, 1.0, "%.2f") end
-    if KINDS[kindIdx] == RIG_KIND then im.SliderFloat("slip angle at the end (deg)", rigSlipMax, 5, 40, "%.0f") end
+    if KINDS[kindIdx] == RIG_KIND then
+      im.SliderFloat("slip angle at the end (deg)", rigSlipMax, 5, 40, "%.0f")
+      im.SliderFloat("wheel load (N), single-wheel rig", rigLoad, 1000, 8000, "%.0f")
+    end
     im.PopItemWidth()
     if state == "idle" then
       if im.Button("Start") then start() end

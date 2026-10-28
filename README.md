@@ -197,6 +197,24 @@ and the force it has to supply to hold that velocity is the opposite of the tyre
 works for any tyre, BeamNG's own included. The plots then compare the modes on the same load and slip with nothing else in the
 way. The rig is new and has been run in the game only in an earlier two-wheel form: expect to adjust it.
 
+**Single-wheel rig (the alternative to the sled).** "ModelTire single-wheel rig" is closer to a real tyre testing machine: one
+wheel on a carrier that turns about a vertical line through the wheel centre (a kingpin without scrub or caster), inside a light
+frame that has no wheel of its own. Everything that holds the rig up and moves it is a force from its controller (`wheelrig.lua`),
+so every external force on the rig except the tyre's is known. The **load** is set exactly (slider "wheel load (N)", default 3500 N):
+the frame's four lower corners are pushed up with the rig's weight minus that load, so the wheel carries the load whatever the rig
+weighs and the tyre's vertical bounce is damped by the controller; virtual vertical springs on the same corners keep the frame level
+(a single wheel cannot). The **slip angle** is made like on a machine: the frame goes straight at the set speed and the carrier is
+turned against the direction of travel by a servo torque, so the slip angle is the wheel's heading. The torque the servo needs to
+hold the wheel is the **aligning torque** of that one tyre (a steering torque cell), restoring positive; the forces Fx, Fy, Fz come
+from Newton over each 0.1 s window (mass times acceleration minus the known servo forces), so they work for every tyre mode,
+BeamNG's own included. It is used exactly like the sled: spawn it on a large flat area, sit in it, and run the sweep test "rig slip
+ramp" or the automatic test, which recognises the rig by itself (both write the same CSVs and reports; the manifest says which rig
+and load). Its controller loads itself when the vehicle is spawned, because a single wheel falls over without it. Compared with the
+sled it has one tyre (no interaction, no unequal wheel loads), an exact load that can differ from the rig's weight, and a direct
+steering torque; it has no suspension, so the tyre's own vertical dynamics are all there is. Offline, the real controller was run
+on the real beam structure with a toy tyre (`tools/rig/`): the forces matched the tyre's true forces within a few newtons and the
+aligning torque within about 1 N m of 62; the structure itself is untested in the game, so expect to adjust it.
+
 **Automatic test and report (all in the game).** "Automatic test + report ..." (next to the sweep button) runs the sled's slip ramp for
 every tyre model and surface you tick, one after the other, with no input from you. For every run it sets the mode and the surface,
 reloads the vehicle (a run can capsize the sled, and the FULL modes need the reload anyway), waits for the tyre to be ready, puts the
@@ -294,6 +312,7 @@ a force is skipped the game log says which wheel and why.
 | `tools/rbr_import.py` | builds the private RBR data mod from your RBR install |
 | `tools/build_zip.py` | packs the mod into `modelTire.zip` |
 | `tools/bench/` | the offline bench (`run_bench.py`, `bench.lua`) |
+| `tools/rig/` | generator of the single-wheel rig's vehicle files (`gen_wheelrig.py`, with the tyre definition it copies) |
 | `docs/DATA.md` | which data you have to provide and how |
 | `docs/FEASIBILITY.md` | how a Lua tyre fits into BeamNG's physics and what is possible |
 | `docs/RBR_vs_NGP_tyre.md` | which parts of rerbr's tyre code are vanilla 1.02 and which NGP |

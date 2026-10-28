@@ -1,0 +1,7 @@
+{
+    "Name":"ModelTire single-wheel rig",
+    "Author":"ModelTire",
+    "Type":"Prop",
+    "Description":"One test wheel on a steerable carrier with a load set by a controller, like a tyre testing machine (see the ModelTire sweep window, test 'rig slip ramp').",
+    "visualTestSkip": true
+}

@@ -1,0 +1,6 @@
+{
+  "format":2,
+  "mainPartName":"modelTire_wheelrig",
+  "model":"modelTire_wheelrig",
+  "parts":{}
+}

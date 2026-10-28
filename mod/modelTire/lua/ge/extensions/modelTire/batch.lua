@@ -32,6 +32,8 @@ local famOn = {}
 for _, f in ipairs(FAMILIES) do famOn[f.key] = im.BoolPtr(true) end
 local surfOn = {full = {}, svj = {}}      -- surface name -> BoolPtr, made when the lists are known
 local speedKmh, rampSec, maxSlip = im.FloatPtr(55), im.FloatPtr(12), im.FloatPtr(20)
+local wheelLoad = im.FloatPtr(3500)            -- single-wheel rig only: the load on its wheel (N)
+local RIG_NAMES = {modelTire_rig = "test sled", modelTire_wheelrig = "single-wheel rig"}
 local winOpen = im.BoolPtr(false)
 
 local S = {phase = "idle", jobs = {}, cur = 0, t = 0, stable = 0, message = "idle"}
@@ -43,11 +45,15 @@ local function playerVehicle()
   return getPlayerVehicle and getPlayerVehicle(0) or be:getPlayerVehicle(0)
 end
 
-local function isSled(veh)
-  if not veh then return false end
+local function rigJbeam(veh)
+  if not veh then return nil end
   local jb = veh.jbeam
   if jb == nil and veh.getJBeamFilename then jb = veh:getJBeamFilename() end
-  return jb == "modelTire_rig"
+  return RIG_NAMES[jb] and jb or nil
+end
+
+local function isSled(veh)      -- (any of the rigs)
+  return rigJbeam(veh) ~= nil
 end
 
 local function safe(s) return (tostring(s):gsub("[^%w]+", "_")) end
@@ -232,8 +238,10 @@ local function writeReport()
     .. "th{background:#eef1f4}td.l,th.l{text-align:left}.bad{color:#b3441a}.small{color:#555;font-size:12px}"
     .. "h2{margin-top:30px;border-bottom:1px solid #cdd3da;padding-bottom:4px}</style></head><body>"
   h[#h + 1] = "<h1>ModelTire tyre model test</h1>"
-  h[#h + 1] = string.format("<p class='small'>%s. Test sled, %.0f km/h, slip angle ramp to %.0f degrees over %.0f s. SVJ tyre: %s, RBR tyre %s. "
-    .. "Lateral force over load (g) against the mean slip angle of the wheels.</p>", esc(S.created), S.speedKmh, S.maxSlip, S.rampSec,
+  local rigText = (S.rigName or "test sled")
+  if S.vehicle == "modelTire_wheelrig" then rigText = string.format("single-wheel rig, wheel load %.0f N", S.load or 0) end
+  h[#h + 1] = string.format("<p class='small'>%s. %s, %.0f km/h, slip angle ramp to %.0f degrees over %.0f s. SVJ tyre: %s, RBR tyre %s. "
+    .. "Lateral force over load (g) against the mean slip angle of the wheels.</p>", esc(S.created), esc(rigText), S.speedKmh, S.maxSlip, S.rampSec,
     esc(S.svjTyre or "none"), esc(S.rbrTyre or "?"))
   h[#h + 1] = "<h2>Summary</h2><table><tr><th class='l'>tyre model</th><th class='l'>surface</th><th>peak (g)</th><th>slip at peak (deg)</th><th>stiffness (g/deg)</th>"
     .. "<th>g at 5&deg;</th><th>g at 10&deg;</th><th>g at the end</th><th>kept after the peak</th><th>noise</th><th>wheel speed jitter</th><th>reached (deg)</th></tr>"
@@ -271,8 +279,11 @@ local function writeReport()
     for _, j in ipairs(mzOk) do
       for _, p in ipairs(j.mzpts) do mmax = math.max(mmax, p[2] * 1.1); mmin = math.min(mmin, p[2] * 1.1) end
     end
-    h[#h + 1] = "<h2>Steering feel: aligning torque</h2><p class='small'>The yaw moment the four tyres put on the sled (N m, all four together), "
-      .. "positive when it turns the sled back towards its direction of travel. It is what a steering wheel feels before the steering geometry "
+    local what = (S.vehicle == "modelTire_wheelrig")
+      and "The aligning torque of the wheel (N m): the torque the steering servo of the single-wheel rig needs to hold the wheel, "
+      or "The yaw moment the four tyres put on the sled (N m, all four together), "
+    h[#h + 1] = "<h2>Steering feel: aligning torque</h2><p class='small'>" .. what
+      .. "positive when it turns the rig back towards its direction of travel. It is what a steering wheel feels before the steering geometry "
       .. "and the game's force feedback processing: the slope at low slip is how heavy the wheel feels about the centre, the peak and its slip "
       .. "angle where it is heaviest, a drop after the peak is the wheel going light as the tyre slides, a sign change a wheel that pulls the "
       .. "other way. Trail = aligning torque over the sideways force.</p>"
@@ -320,8 +331,10 @@ local function writeReport()
     h[#h + 1] = "</table>"
   end
   h[#h + 1] = "<h2>How to read this</h2><ul class='small'><li>BeamNG's own tyre and the modes that keep BeamNG's tyre on the ground ran on the ground under the "
-    .. "sled; only the FULL modes were given a surface. To compare the others on another material, move the sled and run again.</li>"
-    .. "<li>The sled has no steering, no drive and no weight transfer: these curves are the tyre alone.</li>"
+    .. "rig; only the FULL modes were given a surface. To compare the others on another material, move the rig and run again.</li>"
+    .. (S.vehicle == "modelTire_wheelrig"
+      and "<li>The single-wheel rig carries one tyre at a load its controller sets, with no suspension, steering geometry, drive or weight transfer: these curves are the tyre alone.</li>"
+      or "<li>The sled has no steering, no drive and no weight transfer: these curves are the tyre alone.</li>")
     .. "<li>Wheel speed jitter: the spread of a wheel's slip ratio over the run. A free-rolling wheel stays near 0 (BeamNG's own tyre: 0.004); red = above 0.05, a wheel speed that rings and starves the lateral force.</li><li>One run per combination: a small difference is not necessarily real. tools/report.py makes the same report with more plots (needs Python and matplotlib).</li></ul></body></html>"
   local base = "/modelTire/sweeps/" .. S.folder .. "/"
   local csvl = {"family,surface,peak_g,slip_at_peak_deg,stiffness_g_per_deg,g_at_5deg,g_at_10deg,g_end,kept,noise,max_slip_deg,mz_peak_Nm,mz_slip_at_peak_deg,mz_slope_Nm_per_deg,trail_mm,mz_at_10deg_Nm,mz_end_Nm,mz_zero_deg"}
@@ -350,7 +363,8 @@ local function writeManifest()
   local inf = info() or {}
   local m = {
     created = S.created, folder = S.folder, finished = S.finished or false, aborted = S.aborted or false,
-    speedKmh = S.speedKmh, rampSec = S.rampSec, maxSlip = S.maxSlip, vehicle = "modelTire_rig",
+    speedKmh = S.speedKmh, rampSec = S.rampSec, maxSlip = S.maxSlip, vehicle = S.vehicle or "modelTire_rig",
+    wheelLoad = (S.vehicle == "modelTire_wheelrig") and S.load or nil,
     svjTyre = inf.svjTyre, svjFile = inf.svjFile, rbrTyre = inf.rbrTyre, rbrGripScale = inf.rbrGripScale, svjGripScale = inf.svjGripScale,
     families = {}, jobs = {},
   }
@@ -425,7 +439,10 @@ end
 function M.start()
   if S.phase ~= "idle" then return end
   local veh = playerVehicle()
-  if not isSled(veh) then S.message = "the automatic test needs the ModelTire test sled (spawn it and sit in it)"; return end
+  if not isSled(veh) then S.message = "the automatic test needs a ModelTire rig (spawn the test sled or the single-wheel rig and sit in it)"; return end
+  S.vehicle = rigJbeam(veh)
+  S.rigName = RIG_NAMES[S.vehicle]
+  S.load = wheelLoad[0]
   local jobs, skipped = buildJobs()
   if #jobs == 0 then S.message = "nothing to run" .. (skipped[1] and (": " .. skipped[1]) or ""); return end
   S.jobs, S.cur, S.skipped = jobs, 0, skipped
@@ -444,7 +461,7 @@ function M.abort()
   if S.phase == "idle" then return end
   if modelTire_sweep then modelTire_sweep.stopRun() end
   local veh = playerVehicle()
-  if veh then veh:queueLuaCommand("if modelTire_rig then modelTire_rig.stop() end") end
+  if veh then veh:queueLuaCommand("if modelTire_rig then modelTire_rig.stop() end; if modelTire_wheelrig then modelTire_wheelrig.stop() end") end
   local j = S.jobs[S.cur]
   if j and j.status == "running" then j.status = "aborted" end
   finishAll(true)
@@ -494,7 +511,7 @@ function M.update(dt)
   local j = S.jobs[S.cur]
   local veh = playerVehicle()
   if not isSled(veh) then
-    if S.t > 15 and S.phase ~= "setup" then M.abort(); S.message = "stopped: the sled is no longer the active vehicle" end
+    if S.t > 15 and S.phase ~= "setup" then M.abort(); S.message = "stopped: the rig is no longer the active vehicle" end
     -- (right after a reload the vehicle is briefly missing; give it time)
     if S.phase ~= "ready" and S.phase ~= "setup" then return end
   end
@@ -505,6 +522,11 @@ function M.update(dt)
     tel = nil
     S.phase, S.t, S.stable = "ready", 0, 0
   elseif S.phase == "ready" then
+    -- (the single-wheel rig falls over without its controller: make sure it is loaded after the reload)
+    if S.vehicle == "modelTire_wheelrig" and veh and clock - (S.extAt or -10) > 1 then
+      S.extAt = clock
+      veh:queueLuaCommand("extensions.load('modelTire_wheelrig')")
+    end
     if ready(j) then S.stable = S.stable + dt else S.stable = 0 end
     if S.stable >= 1.5 then S.phase, S.t, S.stable = "teleport", 0, 0
     elseif S.t > 90 then failJob(j, "the tyre mode did not become active (telemetry: " .. tostring(tel and tel.model) .. ")") end
@@ -517,9 +539,9 @@ function M.update(dt)
     -- the sled rests on its springs again: still for two seconds
     if veh:getVelocity():length() < 0.15 then S.stable = S.stable + dt else S.stable = 0 end
     if S.stable >= 2.0 and S.t >= 3 then S.phase, S.t = "run", 0
-    elseif S.t > 30 then failJob(j, "the sled did not come to rest after the reload") end
+    elseif S.t > 30 then failJob(j, "the rig did not come to rest after the reload") end
   elseif S.phase == "run" then
-    local ok, why = modelTire_sweep.runRig{speedKmh = S.speedKmh, maxSlip = S.maxSlip, rampSec = S.rampSec, dir = S.folder, tag = j.tag}
+    local ok, why = modelTire_sweep.runRig{speedKmh = S.speedKmh, maxSlip = S.maxSlip, rampSec = S.rampSec, load = S.load, dir = S.folder, tag = j.tag}
     if not ok then failJob(j, tostring(why)); return end
     S.phase, S.t = "wait", 0
   elseif S.phase == "wait" then
@@ -564,7 +586,9 @@ function M.draw()
       .. "test sled on a large flat area first, switch the Lua tyre on in the control window and choose the SVJ tyre and the RBR tyre "
       .. "you want tested. Don't touch the controls while it runs.")
     if not isSled(playerVehicle()) then
-      im.TextColored(im.ImVec4(1, 0.5, 0.3, 1), "The active vehicle is not the ModelTire test sled.")
+      im.TextColored(im.ImVec4(1, 0.5, 0.3, 1), "The active vehicle is not a ModelTire rig (the test sled or the single-wheel rig).")
+    else
+      im.TextDisabled("rig: " .. tostring(RIG_NAMES[rigJbeam(playerVehicle())]))
     end
     if busy then im.BeginDisabled(true) end
     im.Separator()
@@ -579,6 +603,7 @@ function M.draw()
     im.SliderFloat("speed (km/h)", speedKmh, 20, 120, "%.0f")
     im.SliderFloat("ramp duration (s)", rampSec, 6, 30, "%.0f")
     im.SliderFloat("slip angle at the end (deg)", maxSlip, 8, 40, "%.0f")
+    im.SliderFloat("wheel load (N), single-wheel rig only", wheelLoad, 1000, 8000, "%.0f")
     im.PopItemWidth()
     if busy then im.EndDisabled() end
 
