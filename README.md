@@ -210,6 +210,16 @@ tyre models and of every surface, the runs that failed and why) and `summary.csv
 your browser. Nothing outside the game is needed. `tools/report.py "<batch folder>"` (Python and matplotlib) makes a richer version of
 the same report, and merges several folders.
 
+**Steering feel (force feedback).** The sled's yaw hold holds its heading with a couple; whatever yaw moment the four tyres put on the
+sled, that couple has to supply the opposite, so it measures the tyres' total yaw moment (the aligning torque, restoring = positive)
+for every mode, BeamNG's own tyre included, and it captures what the game or a model actually produces, such as a force spread along
+the contact patch. This is what a steering wheel feels before the car's steering geometry and the game's force feedback processing:
+the slope at low slip is how heavy the wheel feels about the centre, the peak and its slip angle where it is heaviest, a drop after
+the peak is the wheel going light as the tyre slides, a sign change a wheel that pulls the other way; trail = aligning torque over the
+sideways force. The CSV has `rig_Mz`; the in-game table and `report.html` list the numbers and plot them (tyre models on the ground
+under the sled, and every surface of the FULL modes); `tools/report.py` does the same and merges folders. It is not the force on the
+steering wheel itself (that needs the steering geometry); for that the sweep's steering ramps on a car record the rack force.
+
 **Offline bench.** `tools/bench` runs the real wheel code against a fake wheel and flat ground, without the game
 (`pip install lupa matplotlib`):
 

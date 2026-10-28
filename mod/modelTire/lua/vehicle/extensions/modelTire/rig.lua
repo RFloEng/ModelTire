@@ -12,6 +12,11 @@
 -- total tyre force that works for any tyre, BeamNG's own included:
 --     tyre force = m * a - servo force      (a is the measured acceleration of the centre of mass over the report window)
 -- Body frame, forces reported on the sled: Fx along the wheels' heading, Fy sideways (+ to the left).
+-- The yaw hold's couple is a measurement of the tyres' total yaw moment, the same way: Mz = Iz * (change of yaw rate / time) -
+-- the servo's moment about the centre of mass (the couple, plus the servo force's offset from the centre of mass). Counter-
+-- clockwise seen from above is positive and the slip ramp turns the direction of travel counter-clockwise, so a restoring
+-- (aligning) moment, one that turns the sled towards its direction of travel, is positive. It is what a steering wheel feels,
+-- before the steering geometry: the aligning torque of the four tyres plus the small difference of front and rear side forces.
 --
 -- Phases: settle (speed up to the target, slip 0), hold (1.5 s, the load settles), ramp (slip 0 -> max), done.
 
@@ -41,7 +46,9 @@ local vcmd = 0
 local aSx, aSy, aN, aT = 0, 0, 0, 0   -- servo force (world) sum, steps, window time
 local repVx, repVy = 0, 0              -- centre of mass velocity at the last report
 local curVx, curVy, curPsi = 0, 0, 0
-local lastFx, lastFy = 0, 0
+local lastFx, lastFy, lastMz = 0, 0, 0
+local aTq, repW, curW = 0, nil, 0       -- servo yaw moment sum over the window, yaw rate at the last report and now
+local heavyInertia = 1
 local lastSpeed = 0
 local logT = 0
 
@@ -71,6 +78,15 @@ local function collect()
   comx, comy = comx / math.max(totalMass, 1e-6), comy / math.max(totalMass, 1e-6)
   yawInertia = 0
   for _, a in ipairs(all) do yawInertia = yawInertia + a.m * ((a.x - comx) ^ 2 + (a.y - comy) ^ 2) end
+  local hmx, hmy = 0, 0
+  for _, h in ipairs(heavyNodes) do
+    local p = obj:getNodePosition(h.cid)
+    h.x, h.y = p.x, p.y
+    hmx, hmy = hmx + p.x * h.m, hmy + p.y * h.m
+  end
+  hmx, hmy = hmx / math.max(heavyMass, 1e-6), hmy / math.max(heavyMass, 1e-6)
+  heavyInertia = 0
+  for _, h in ipairs(heavyNodes) do heavyInertia = heavyInertia + h.m * ((h.x - hmx) ^ 2 + (h.y - hmy) ^ 2) end
   log("I", "modelTire_rig", string.format("%d nodes, mass %.1f kg, yaw inertia %.0f kg m^2, %d force nodes (%s)", #all, totalMass, yawInertia,
     #servoNodes, named > 0 and "by name" or "NAMES NOT FOUND: all nodes"))
 end
@@ -109,6 +125,7 @@ local function run(speedKmh, maxSlipDeg, rampSec)
   iex, iey = 0, 0
   slipNow, vcmd = 0, 0
   aSx, aSy, aN, aT = 0, 0, 0, 0
+  aTq, repW = 0, nil
   repVx, repVy = nil, nil
   tPhase = 0
   log("I", "modelTire_rig", string.format("run: %.1f m/s, slip to %.0f deg over %.0f s, heading (%.2f, %.2f)", cmd.speed, cmd.maxSlip, cmd.ramp, hx, hy))
@@ -122,12 +139,24 @@ local function onPhysicsStep(dt)
   if phase == "off" or not servoNodes or dt <= 0 then return end
   tPhase = tPhase + dt
   -- velocity of the centre of mass from the structural nodes (the frame bounces on its springs, a single node would show that)
-  local vx, vy = 0, 0
+  local vx, vy, px, py = 0, 0, 0, 0
   for i = 1, #heavyNodes do
-    local nv = obj:getNodeVelocityVector(heavyNodes[i].cid)
-    vx, vy = vx + nv.x * heavyNodes[i].m, vy + nv.y * heavyNodes[i].m
+    local h = heavyNodes[i]
+    local nv = obj:getNodeVelocityVector(h.cid)
+    local p = obj:getNodePosition(h.cid)
+    h.vx, h.vy, h.px, h.py = nv.x, nv.y, p.x, p.y
+    vx, vy = vx + nv.x * h.m, vy + nv.y * h.m
+    px, py = px + p.x * h.m, py + p.y * h.m
   end
   vx, vy = vx / heavyMass, vy / heavyMass
+  local comx, comy = px / heavyMass, py / heavyMass
+  -- yaw rate from the angular momentum of the structural nodes about their centre of mass
+  local Lz = 0
+  for i = 1, #heavyNodes do
+    local h = heavyNodes[i]
+    Lz = Lz + h.m * ((h.px - comx) * (h.vy - vy) - (h.py - comy) * (h.vx - vx))
+  end
+  local wNow = Lz / heavyInertia
   local speedNow = math.sqrt(vx * vx + vy * vy)
   local lx, ly = -hy, hx                       -- the left of the travel direction
   local alphaDot = 0
@@ -181,6 +210,11 @@ local function onPhysicsStep(dt)
     obj:applyForceVector(servoNodes[i], vec3(fx - kT * ry, fy + kT * rx, 0))
   end
 
+  -- the servo's yaw moment about the centre of mass: its couple, plus its force acting at the centroid of the force nodes
+  local Tz = torque + (cx - comx) * (totalMass * ay) - (cy - comy) * (totalMass * ax)
+  aTq = aTq + Tz
+  curW = wNow
+  if not repW then repW = wNow end
   -- the tyres' force on the sled: m * a_target - servo force (world), then the sled's own axes (wheels' heading)
   aSx, aSy, aN, aT = aSx + totalMass * ax, aSy + totalMass * ay, aN + 1, aT + dt
   curVx, curVy, curPsi = vx, vy, psi
@@ -202,9 +236,13 @@ local function report()
     local hdx, hdy = math.cos(curPsi), math.sin(curPsi)
     lastFx, lastFy = Fwx * hdx + Fwy * hdy, -Fwx * hdy + Fwy * hdx
     repVx, repVy = curVx, curVy
+    -- yaw: Iz * (change of yaw rate over the window) = tyre moment + servo moment
+    lastMz = yawInertia * (curW - repW) / aT - aTq / aN
+    repW = curW
   end
   aSx, aSy, aN, aT = 0, 0, 0, 0
-  return {phase = phase, slip = math.deg(slipNow), speed = lastSpeed, Fx = lastFx, Fy = lastFy, load = totalMass * g,
+  aTq = 0
+  return {phase = phase, Mz = lastMz, slip = math.deg(slipNow), speed = lastSpeed, Fx = lastFx, Fy = lastFy, load = totalMass * g,
     maxSlip = cmd.maxSlip, ramp = cmd.ramp}
 end
 

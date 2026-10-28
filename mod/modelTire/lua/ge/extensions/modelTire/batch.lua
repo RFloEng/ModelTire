@@ -132,6 +132,40 @@ local function analyse(curve)
   return m, pts
 end
 
+-- the aligning torque (the tyres' yaw moment on the sled, restoring = positive) against the slip angle
+local function analyseMz(mz)
+  if not mz or #mz < 10 then return nil end
+  local sl, m, fy = {}, {}, {}
+  for i, p in ipairs(mz) do sl[i], m[i], fy[i] = p[1], p[2], p[3] end
+  local sm = movavg(m, 7)
+  local n, ip = #sm, 1
+  for i = 1, n do if sm[i] > sm[ip] then ip = i end end
+  local function at(x)
+    if sl[n] < x then return nil end
+    local best = 1
+    for i = 1, n do if math.abs(sl[i] - x) < math.abs(sl[best] - x) then best = i end end
+    return sm[best]
+  end
+  local s0, s1, tail, cnt, tn, td = 0, 0, 0, 0, 0, 0
+  for i = 1, n do
+    if sl[i] <= 2 then s0 = s0 + sl[i] * sm[i]; s1 = s1 + sl[i] * sl[i] end
+    if sl[i] >= 0.5 and sl[i] <= 3 and fy[i] > 300 then tn = tn + sm[i]; td = td + fy[i] end
+  end
+  for i = math.max(1, math.floor(n * 0.9)), n do tail = tail + sm[i]; cnt = cnt + 1 end
+  local zero
+  for i = ip, n - 1 do
+    if sm[i] > 0 and sm[i + 1] <= 0 then zero = sl[i] + (sl[i + 1] - sl[i]) * sm[i] / (sm[i] - sm[i + 1]); break end
+  end
+  local r = {peak = sm[ip], slipPeak = sl[ip], slope = s1 > 0 and s0 / s1 or nil, trail0 = td > 0 and 1000 * tn / td or nil,
+    mz10 = at(10), mzEnd = tail / cnt, zero = zero}
+  local pts, trail, step = {}, {}, math.max(1, math.floor(n / 120))
+  for i = 1, n, step do
+    pts[#pts + 1] = {sl[i], sm[i]}
+    if fy[i] > 500 then trail[#trail + 1] = {sl[i], 1000 * sm[i] / fy[i]} end
+  end
+  return r, pts, trail
+end
+
 local FAM_COLOR = {vanilla = "#2b7bd6", brush = "#e07b1f", adv_brush = "#8a5a2b", rbr_light = "#3aa04a", svj_light = "#d8479a", rbr_full = "#b59a14", svj_full = "#7d56d6"}
 local function hsv(k, n)       -- distinct colours for the surfaces of one family
   local h = (k - 1) / math.max(1, n) * 300
@@ -144,15 +178,17 @@ local function hsv(k, n)       -- distinct colours for the surfaces of one famil
 end
 
 -- an SVG plot of curves: list of {pts, color, dash}
-local function svgPlot(curves, title, xmax, ymax)
+local function svgPlot(curves, title, xmax, ymax, ymin)
+  ymin = ymin or 0
   local W, H, L, T, R, B = 760, 380, 52, 28, 10, 40
   local o = {string.format("<svg xmlns='http://www.w3.org/2000/svg' width='%d' height='%d' viewBox='0 0 %d %d' font-family='sans-serif' font-size='11'>", W, H, W, H)}
   o[#o + 1] = string.format("<rect x='0' y='0' width='%d' height='%d' fill='#fff'/>", W, H)
   local function sx(x) return L + math.min(x / xmax, 1) * (W - L - R) end
-  local function sy(y) return H - B - (y / ymax) * (H - T - B) end
+  local function sy(y) return H - B - ((y - ymin) / (ymax - ymin)) * (H - T - B) end
   for k = 0, 4 do
-    local y = sy(ymax * k / 4)
-    o[#o + 1] = string.format("<line x1='%d' y1='%.1f' x2='%d' y2='%.1f' stroke='#e3e6ea'/><text x='%d' y='%.1f' text-anchor='end'>%.2f</text>", L, y, W - R, y, L - 4, y + 4, ymax * k / 4)
+    local yv = ymin + (ymax - ymin) * k / 4
+    local y = sy(yv)
+    o[#o + 1] = string.format("<line x1='%d' y1='%.1f' x2='%d' y2='%.1f' stroke='%s'/><text x='%d' y='%.1f' text-anchor='end'>%.2f</text>", L, y, W - R, y, (ymin < 0 and math.abs(yv) < 1e-9) and '#888' or '#e3e6ea', L - 4, y + 4, yv)
     local x = sx(xmax * k / 4)
     o[#o + 1] = string.format("<text x='%.1f' y='%d' text-anchor='middle'>%.0f</text>", x, H - B + 14, xmax * k / 4)
   end
@@ -227,6 +263,50 @@ local function writeReport()
         .. svgPlot(cs, "lateral force / load (g); dashed: the tyre models on the ground under the sled", xmax, ymax) .. swatches(names)
     end
   end
+  -- steering feel: the aligning torque of the four tyres (the yaw moment they put on the sled), restoring = positive
+  local mzOk = {}
+  for _, j in ipairs(ok) do if j.mzm and j.mzpts then mzOk[#mzOk + 1] = j end end
+  if #mzOk > 0 then
+    local mmax, mmin = 10, -1
+    for _, j in ipairs(mzOk) do
+      for _, p in ipairs(j.mzpts) do mmax = math.max(mmax, p[2] * 1.1); mmin = math.min(mmin, p[2] * 1.1) end
+    end
+    h[#h + 1] = "<h2>Steering feel: aligning torque</h2><p class='small'>The yaw moment the four tyres put on the sled (N m, all four together), "
+      .. "positive when it turns the sled back towards its direction of travel. It is what a steering wheel feels before the steering geometry "
+      .. "and the game's force feedback processing: the slope at low slip is how heavy the wheel feels about the centre, the peak and its slip "
+      .. "angle where it is heaviest, a drop after the peak is the wheel going light as the tyre slides, a sign change a wheel that pulls the "
+      .. "other way. Trail = aligning torque over the sideways force.</p>"
+    h[#h + 1] = "<table><tr><th class='l'>tyre model</th><th class='l'>surface</th><th>peak (N m)</th><th>at (deg)</th><th>slope (N m/deg)</th>"
+      .. "<th>trail at low slip (mm)</th><th>at 10&deg; (N m)</th><th>at the end (N m)</th><th>sign change (deg)</th></tr>"
+    for _, j in ipairs(mzOk) do
+      local r = j.mzm
+      h[#h + 1] = string.format("<tr><td class='l'>%s</td><td class='l'>%s</td><td><b>%s</b></td><td>%s</td><td>%s</td><td>%s</td><td>%s</td><td>%s</td><td>%s</td></tr>",
+        esc(j.family.name), esc(label(j)), f2(r.peak, "%.0f"), f2(r.slipPeak, "%.1f"), f2(r.slope, "%.1f"), f2(r.trail0, "%.0f"), f2(r.mz10, "%.0f"),
+        f2(r.mzEnd, "%.0f"), f2(r.zero, "%.1f"))
+    end
+    h[#h + 1] = "</table>"
+    local refc = {}
+    for _, j in ipairs(mzOk) do
+      if not j.family.surfaces then refc[#refc + 1] = {pts = j.mzpts, color = FAM_COLOR[j.family.key] or "#444", label = j.family.name} end
+    end
+    if #refc > 0 then
+      h[#h + 1] = "<h3>Tyre models on the ground under the sled</h3>" .. svgPlot(refc, "aligning torque of the four tyres (N m)", xmax, mmax, mmin) .. swatches(refc)
+    end
+    for _, key in ipairs({"rbr_full", "svj_full"}) do
+      local list = {}
+      for _, j in ipairs(mzOk) do if j.family.key == key then list[#list + 1] = j end end
+      if #list > 0 then
+        local cs, names = {}, {}
+        for _, c in ipairs(refc) do cs[#cs + 1] = {pts = c.pts, color = c.color, dash = true} end
+        for k, j in ipairs(list) do
+          cs[#cs + 1] = {pts = j.mzpts, color = hsv(k, #list)}
+          names[#names + 1] = {color = hsv(k, #list), label = j.surface}
+        end
+        h[#h + 1] = "<h3>" .. esc(list[1].family.name) .. ", aligning torque on every surface</h3>"
+          .. svgPlot(cs, "aligning torque (N m); dashed: the tyre models on the ground under the sled", xmax, mmax, mmin) .. swatches(names)
+      end
+    end
+  end
   local bad = {}
   for _, j in ipairs(S.jobs) do if j.status ~= "ok" then bad[#bad + 1] = j end end
   h[#h + 1] = "<h2>Runs that did not give a result</h2>"
@@ -244,11 +324,13 @@ local function writeReport()
     .. "<li>The sled has no steering, no drive and no weight transfer: these curves are the tyre alone.</li>"
     .. "<li>Wheel speed jitter: the spread of a wheel's slip ratio over the run. A free-rolling wheel stays near 0 (BeamNG's own tyre: 0.004); red = above 0.05, a wheel speed that rings and starves the lateral force.</li><li>One run per combination: a small difference is not necessarily real. tools/report.py makes the same report with more plots (needs Python and matplotlib).</li></ul></body></html>"
   local base = "/modelTire/sweeps/" .. S.folder .. "/"
-  local csvl = {"family,surface,peak_g,slip_at_peak_deg,stiffness_g_per_deg,g_at_5deg,g_at_10deg,g_end,kept,noise,max_slip_deg"}
+  local csvl = {"family,surface,peak_g,slip_at_peak_deg,stiffness_g_per_deg,g_at_5deg,g_at_10deg,g_end,kept,noise,max_slip_deg,mz_peak_Nm,mz_slip_at_peak_deg,mz_slope_Nm_per_deg,trail_mm,mz_at_10deg_Nm,mz_end_Nm,mz_zero_deg"}
   for _, j in ipairs(ok) do
     local m = j.m
-    csvl[#csvl + 1] = string.format("%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s", j.family.key, label(j), f2(m.peak, "%.4f"), f2(m.slipPeak), f2(m.stiff, "%.4f"),
-      f2(m.g5, "%.4f"), f2(m.g10, "%.4f"), f2(m.gEnd, "%.4f"), f2(m.keep, "%.3f"), f2(m.noise, "%.4f"), f2(m.maxSlip, "%.1f"))
+    local z = j.mzm or {}
+    csvl[#csvl + 1] = string.format("%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s", j.family.key, label(j), f2(m.peak, "%.4f"), f2(m.slipPeak), f2(m.stiff, "%.4f"),
+      f2(m.g5, "%.4f"), f2(m.g10, "%.4f"), f2(m.gEnd, "%.4f"), f2(m.keep, "%.3f"), f2(m.noise, "%.4f"), f2(m.maxSlip, "%.1f"),
+      f2(z.peak, "%.1f"), f2(z.slipPeak, "%.1f"), f2(z.slope, "%.2f"), f2(z.trail0, "%.1f"), f2(z.mz10, "%.1f"), f2(z.mzEnd, "%.1f"), f2(z.zero, "%.1f"))
   end
   local good = pcall(function()
     writeFile(base .. "report.html", table.concat(h, "\n"))
@@ -276,7 +358,8 @@ local function writeManifest()
   for _, j in ipairs(S.jobs) do
     m.jobs[#m.jobs + 1] = {idx = j.idx, family = j.family.key, familyName = j.family.name, surface = j.surface, tag = j.tag,
       status = j.status, reason = j.reason, samples = j.samples, file = j.file, detectedSurface = j.detected, model = j.model,
-      staticLoad = j.staticLoad, wheelJitter = j.kappaSd}
+      staticLoad = j.staticLoad, wheelJitter = j.kappaSd,
+      aligning = j.mzm}
   end
   pcall(function()
     if FS and FS.directoryCreate then FS:directoryCreate("modelTire/sweeps/" .. S.folder, true) end
@@ -447,6 +530,7 @@ function M.update(dt)
       j.detected, j.model, j.staticLoad = r.surface, r.model, r.staticLoad
       j.kappaSd = r.kappaSd
       if r.curve then j.m, j.pts = analyse(r.curve) end
+      if r.mz then j.mzm, j.mzpts, j.trailpts = analyseMz(r.mz) end
       if r.ok and (r.samples or 0) >= 20 then j.status = "ok" else j.status = "failed"; j.reason = j.reason or "no result" end
       writeManifest()
       nextJob()
@@ -535,8 +619,8 @@ function M.draw()
         im.TextWrapped(winPath(S.reportPath))
         if S.openNote then im.TextDisabled(S.openNote) end
       end
-      im.Columns(6, "batchResults", true)
-      for _, hd in ipairs({"tyre model", "surface", "peak g", "at deg", "g at end", "kept"}) do im.Text(hd); im.NextColumn() end
+      im.Columns(8, "batchResults", true)
+      for _, hd in ipairs({"tyre model", "surface", "peak g", "at deg", "g at end", "kept", "Mz peak Nm", "Mz slope Nm/deg"}) do im.Text(hd); im.NextColumn() end
       im.Separator()
       for _, j in ipairs(done) do
         im.Text(j.family.key); im.NextColumn()
@@ -545,6 +629,8 @@ function M.draw()
         im.Text(string.format("%.1f", j.m.slipPeak)); im.NextColumn()
         im.Text(string.format("%.2f", j.m.gEnd)); im.NextColumn()
         im.Text(j.m.keep and string.format("%.0f%%", j.m.keep * 100) or "-"); im.NextColumn()
+        im.Text(j.mzm and string.format("%.0f", j.mzm.peak) or "-"); im.NextColumn()
+        im.Text(j.mzm and j.mzm.slope and string.format("%.1f", j.mzm.slope) or "-"); im.NextColumn()
       end
       im.Columns(1)
     end

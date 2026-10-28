@@ -91,11 +91,11 @@ local function finish(reason)
     current.visible = true
     runs[#runs + 1] = current
     -- keep the CSV next to the other mod data
-    local lines = {"t,speed,steer,throttle,brake,ay_ms2,ax_ms2,rack_N,rig_Fx,rig_Fy,rig_load,wheel,slip_angle_rad,slip_ratio,Fz,Fx,Fy,slip_vx,slip_vy,mu,treadT,wear"}
+    local lines = {"t,speed,steer,throttle,brake,ay_ms2,ax_ms2,rack_N,rig_Fx,rig_Fy,rig_load,rig_Mz,wheel,slip_angle_rad,slip_ratio,Fz,Fx,Fy,slip_vx,slip_vy,mu,treadT,wear"}
     for _, s in ipairs(current.samples) do
       for _, w in ipairs(s.w) do
-        lines[#lines + 1] = string.format("%.2f,%.2f,%.3f,%.3f,%.3f,%.3f,%.3f,%.1f,%.0f,%.0f,%.0f,%s,%.4f,%.4f,%.0f,%.0f,%.0f,%.3f,%.3f,%.3f,%.1f,%.4f", s.t, s.v, s.steer, s.throttle,
-          s.brake, s.acc[1], s.acc[2], s.rack or 0, s.rig and s.rig.Fx or 0, s.rig and s.rig.Fy or 0, s.rig and s.rig.load or 0, tostring(w.name), w.alpha or 0, w.kappa or 0, w.Fz or 0, w.Fx or 0, w.Fy or 0,
+        lines[#lines + 1] = string.format("%.2f,%.2f,%.3f,%.3f,%.3f,%.3f,%.3f,%.1f,%.0f,%.0f,%.0f,%.1f,%s,%.4f,%.4f,%.0f,%.0f,%.0f,%.3f,%.3f,%.3f,%.1f,%.4f", s.t, s.v, s.steer, s.throttle,
+          s.brake, s.acc[1], s.acc[2], s.rack or 0, s.rig and s.rig.Fx or 0, s.rig and s.rig.Fy or 0, s.rig and s.rig.load or 0, s.rig and s.rig.Mz or 0, tostring(w.name), w.alpha or 0, w.kappa or 0, w.Fz or 0, w.Fx or 0, w.Fy or 0,
           w.sx or 0, w.sy or 0, w.mu or 0, w.treadT or 0, w.wear or 0)
       end
     end
@@ -127,7 +127,16 @@ local function finish(reason)
       local m = b[2] / b[1]
       ksum, kn = ksum + math.sqrt(math.max(0, b[3] / b[1] - m * m)), kn + 1
     end
-    lastResult = {ok = (reason == "finished") and ok, kappaSd = kn > 0 and ksum / kn or nil, reason = reason, samples = #current.samples, path = ok and path or nil,
+    -- the tyres' yaw moment (aligning torque) against the mean slip angle: {slip deg, Mz N m, |Fy| N}
+    local mzPts = {}
+    if current.rig then
+      for _, smp in ipairs(current.samples) do
+        local sl, n = 0, 0
+        for _, w in ipairs(smp.w) do sl, n = sl + math.deg(math.abs(w.alpha or 0)), n + 1 end
+        if n > 0 and smp.v > 2 and smp.rig then mzPts[#mzPts + 1] = {sl / n, smp.rig.Mz or 0, math.abs(smp.rig.Fy or 0)} end
+      end
+    end
+    lastResult = {ok = (reason == "finished") and ok, kappaSd = kn > 0 and ksum / kn or nil, mz = mzPts, reason = reason, samples = #current.samples, path = ok and path or nil,
       label = current.label, surface = current.surface, model = current.model, staticLoad = current.staticLoad,
       curve = current.rig and curve(current, true) or nil}   -- {slip deg, lateral force / load}, for the automatic test's report
   else
@@ -199,7 +208,7 @@ local function rigUpdate(dt, v)
     if newSample and lastTelemetry.wheels then
       newSample = false
       recordSample({t = runT, v = v, steer = 0, throttle = 0, brake = 0, acc = {0, 0}, rack = nil, w = {},
-        rig = {Fx = rg.Fx, Fy = rg.Fy, load = rg.load, slip = rg.slip}})
+        rig = {Fx = rg.Fx, Fy = rg.Fy, load = rg.load, slip = rg.slip, Mz = rg.Mz}})
     end
   elseif rg and rg.phase == "done" and state == "run" then   -- (a "done" left over from the run before does not count: we must have seen the ramp)
     finish("finished")

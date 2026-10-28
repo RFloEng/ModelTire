@@ -668,3 +668,23 @@ Offline (the bench with a free-spinning wheel, `--spin-inertia`, torque taken fr
 the same curves and a slip ratio of +0.002 at 10 degrees, down to 0.3 kg m^2 of wheel inertia, and the rim path is active (8 rim nodes
 found). The offline plant has no soft carcass, so it cannot show the ringing: only the sled can. Next run: the "wheel speed jitter"
 of the brush and the Advanced brush should fall from 0.20 towards 0.01, and the stiffness towards 0.2 g per degree.
+
+## Aligning torque (steering feel) measured on the sled
+
+`rig.lua` reports `Mz`: the yaw moment of the four tyres on the sled about its centre of mass, counter-clockwise seen from above
+positive. The slip ramp turns the direction of travel counter-clockwise, so a restoring moment is positive. Newton for the rotation:
+`Mz = Iz * (change of yaw rate / time) - servo moment`, over each 0.1 s report window. The servo moment is the yaw hold's couple plus the
+servo force's offset from the centre of mass (the force acts at the centroid of the four force nodes). The yaw rate comes from the
+angular momentum of the structural nodes about their centre of mass (differentiating the heading was too noisy at these torque levels);
+`Iz` is the inertia of all the nodes. The result includes the small difference of the front and rear side forces, which is near zero on
+this symmetric sled.
+
+Checked offline with a rigid-body toy sled (13 nodes, a magic-formula tyre and a trail that falls from 35 mm to zero at 12 degrees,
+once with the centre of mass 6 cm off the middle): the measured moment follows the true one within 2.3 N m over a 278 N m signal.
+
+Plumbing: the sweep adds `rig_Mz` to the CSV and `lastResult.mz` (slip, Mz, |Fy|); `batch.lua` `analyseMz` gives peak, slip at the
+peak, slope over the first 2 degrees (N m per degree), trail at 0.5 to 3 degrees (mm), value at 10 degrees and at the end, and the slip
+angle where it changes sign; the report has a table and signed plots (`svgPlot` got a `ymin`), `summary.csv` seven more columns, the
+in-game table two (peak and slope); `tools/report.py` the same. The values are the four tyres together, so a single tyre is a quarter
+of them. A real car's steering feel also depends on the kingpin geometry and the game's force feedback settings, which the sled does
+not have.

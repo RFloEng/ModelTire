@@ -53,18 +53,21 @@ def read_run(path):
         for r in rd:
             t = r["t"]
             e = rows.setdefault(t, {"fy": float(r["rig_Fy"]), "fx": float(r.get("rig_Fx", 0) or 0), "load": float(r["rig_load"]),
-                                    "v": float(r["speed"]), "alpha": [], "fz": []})
+                                    "v": float(r["speed"]), "alpha": [], "fz": [],
+                                    "mz": float(r.get("rig_Mz", 0) or 0)})
             e["alpha"].append(abs(float(r["slip_angle_rad"])))
             e["fz"].append(float(r["Fz"]))
             kap.setdefault(r["wheel"], []).append(float(r["slip_ratio"]))
     ts = sorted(rows, key=float)
-    slip, g, fx_g, fz = [], [], [], []
+    slip, g, fx_g, fz, mzl, fyl = [], [], [], [], [], []
+    has_mz = "rig_Mz" in cols
     for t in ts:
         e = rows[t]
         if e["load"] <= 100 or e["v"] < 2 or not e["alpha"]:
             continue
         slip.append(math.degrees(sum(e["alpha"]) / len(e["alpha"])))
         g.append(abs(e["fy"]) / e["load"])
+        mzl.append(e["mz"]); fyl.append(abs(e["fy"]))
         fx_g.append(e["fx"] / e["load"])
         fz.extend(e["fz"])
     if len(slip) < 10:
@@ -73,7 +76,31 @@ def read_run(path):
     for v in kap.values():
         m = sum(v) / len(v)
         sds.append(math.sqrt(sum((x - m) ** 2 for x in v) / len(v)))
-    return {"slip": slip, "g": g, "fx_g": fx_g, "fz": fz, "kappa_sd": sum(sds) / len(sds) if sds else float("nan")}
+    return {"slip": slip, "g": g, "fx_g": fx_g, "fz": fz, "kappa_sd": sum(sds) / len(sds) if sds else float("nan"),
+            "mz": mzl if has_mz else None, "fy": fyl}
+
+
+def aligning(run):
+    """Aligning torque of the four tyres (yaw moment on the sled, restoring = positive): peak, slip at the peak, slope at low slip,
+    trail at low slip, value at 10 degrees and at the end, and where it changes sign."""
+    if not run.get("mz"):
+        return None
+    slip, mz, fy = run["slip"], moving_average(run["mz"], 7), run["fy"]
+    n = len(mz)
+    ip = max(range(n), key=lambda i: mz[i])
+    pts = [(s, v) for s, v in zip(slip, mz) if s <= 2.0]
+    den = sum(s * s for s, v in pts)
+    slope = sum(s * v for s, v in pts) / den if den > 0 else float("nan")
+    sel = [(m, f) for s, m, f in zip(slip, mz, fy) if 0.5 <= s <= 3.0 and f > 300]
+    trail0 = 1000 * sum(m for m, f in sel) / sum(f for m, f in sel) if sel else float("nan")
+    at10 = mz[min(range(n), key=lambda i: abs(slip[i] - 10))] if slip[-1] >= 10 else float("nan")
+    tail = mz[max(0, int(n * 0.9)):]
+    zero = None
+    for i in range(ip, n - 1):
+        if mz[i] > 0 >= mz[i + 1]:
+            zero = slip[i] + (slip[i + 1] - slip[i]) * mz[i] / (mz[i] - mz[i + 1])
+            break
+    return {"peak": mz[ip], "slip_peak": slip[ip], "slope": slope, "trail0": trail0, "at10": at10, "end": sum(tail) / len(tail), "zero": zero}
 
 
 def metrics(run):
@@ -101,7 +128,7 @@ def metrics(run):
     fz_cv = (math.sqrt(sum((x - fzm) ** 2 for x in fz) / len(fz)) / fzm) if fzm > 100 else float("nan")
     return {"peak_g": peak, "slip_peak": slip_peak, "stiffness": stiff, "g5": at(5), "g10": at(10), "g_end": g_end,
             "retention": g_end / peak if peak > 0 else float("nan"), "noise": noise, "fz_cv": fz_cv, "max_slip": slip[-1],
-            "jitter": run.get("kappa_sd", float("nan"))}
+            "jitter": run.get("kappa_sd", float("nan")), "mz": aligning(run)}
 
 
 def load_folders(folders):
@@ -249,6 +276,41 @@ def main():
         ax.grid(alpha=0.3); ax.legend(fontsize=6, ncol=2); ax.set_title("%s, all surfaces" % FAMILY_NAMES[fam])
         save(fig, "all_" + fam, "All surfaces of %s together." % FAMILY_NAMES[fam])
 
+    # aligning torque: what the steering wheel feels before the steering geometry
+    mzruns = [r for r in good if r["m"].get("mz")]
+    if mzruns:
+        def mzcurve(r):
+            return r["data"]["slip"], moving_average(r["data"]["mz"], 7)
+        mzmax = max(max(moving_average(r["data"]["mz"], 7)) for r in mzruns) * 1.1
+        mzmin = min(0, min(min(moving_average(r["data"]["mz"], 7)) for r in mzruns) * 1.1)
+        mzrefs = [r for r in mzruns if r["family"] not in FORCED]
+        if mzrefs:
+            fig, ax = plt.subplots(figsize=(8, 4.6))
+            for r in mzrefs:
+                s, y = mzcurve(r)
+                ax.plot(s, y, color=FAMILY_COLORS.get(r["family"]), lw=2, label="%s (%s)" % (FAMILY_NAMES.get(r["family"], r["family"]), label_of(r)))
+            ax.axhline(0, color="#888", lw=0.8)
+            ax.set_xlabel("mean slip angle (deg)"); ax.set_ylabel("aligning torque of the four tyres (N m)"); ax.set_xlim(0, xmax)
+            ax.set_ylim(mzmin, mzmax); ax.grid(alpha=0.3); ax.legend(fontsize=8)
+            ax.set_title("Steering feel: aligning torque (restoring = positive)")
+            save(fig, "mz_refs", "Aligning torque of the tyre models on the ground under the sled.")
+        for fam in ("rbr_full", "svj_full"):
+            rs = [r for r in mzruns if r["family"] == fam]
+            if len(rs) < 1:
+                continue
+            fig, ax = plt.subplots(figsize=(8, 4.6))
+            for r in mzrefs:
+                s, y = mzcurve(r)
+                ax.plot(s, y, color=FAMILY_COLORS.get(r["family"]), lw=1, ls="--", alpha=0.7)
+            cmap = plt.get_cmap("turbo")
+            for k, r in enumerate(rs):
+                s, y = mzcurve(r)
+                ax.plot(s, y, color=cmap(k / max(1, len(rs) - 1)), lw=1.6, label=r["surface"])
+            ax.axhline(0, color="#888", lw=0.8)
+            ax.set_xlabel("mean slip angle (deg)"); ax.set_ylabel("aligning torque (N m)"); ax.set_xlim(0, xmax); ax.set_ylim(mzmin, mzmax)
+            ax.grid(alpha=0.3); ax.legend(fontsize=6, ncol=2); ax.set_title("%s, aligning torque on every surface" % FAMILY_NAMES[fam])
+            save(fig, "mz_" + fam, "Aligning torque of %s on every surface (dashed: the reference families)." % FAMILY_NAMES[fam])
+
     # the table -----------------------------------------------------------------------------------------------------------
     def fmt(x, f="%.2f"):
         return "-" if x is None or (isinstance(x, float) and math.isnan(x)) else f % x
@@ -258,12 +320,15 @@ def main():
     with open(os.path.join(out, "summary.csv"), "w", newline="") as f:
         w = csv.writer(f)
         w.writerow(["family", "surface", "peak_g", "slip_at_peak_deg", "stiffness_g_per_deg", "g_at_5deg", "g_at_10deg", "g_end", "retention",
-                    "noise", "load_cv", "wheel_speed_jitter", "max_slip_deg", "folder"])
+                    "noise", "load_cv", "wheel_speed_jitter", "max_slip_deg", "folder", "mz_peak_Nm", "mz_slip_at_peak_deg",
+                    "mz_slope_Nm_per_deg", "trail_mm", "mz_at_10deg_Nm", "mz_end_Nm", "mz_zero_deg"])
         for r in good:
             m = r["m"]
             w.writerow([r["family"], label_of(r), "%.4f" % m["peak_g"], "%.2f" % m["slip_peak"], "%.4f" % m["stiffness"], "%.4f" % m["g5"],
                         "%.4f" % m["g10"], "%.4f" % m["g_end"], "%.3f" % m["retention"], "%.4f" % m["noise"], "%.3f" % m["fz_cv"], "%.4f" % m["jitter"],
-                        "%.1f" % m["max_slip"], os.path.basename(r["folder"])])
+                        "%.1f" % m["max_slip"], os.path.basename(r["folder"])] +
+                       ([("%.1f" % z["peak"]), ("%.1f" % z["slip_peak"]), ("%.2f" % z["slope"]), ("%.1f" % z["trail0"]), ("%.1f" % z["at10"]),
+                         ("%.1f" % z["end"]), ("" if z["zero"] is None else "%.1f" % z["zero"])] if (z := m.get("mz")) else [""] * 7))
 
     # html ------------------------------------------------------------------------------------------------------------------
     h = []
@@ -304,6 +369,22 @@ def main():
              "the curve's jitter over the peak. load variation: spread of the load on a wheel over its mean (a high value means the wheel "
              "bounces; '-' for BeamNG's own tyre, which reports no load).</p>")
 
+    mzrows = [r for r in good if r["m"].get("mz")]
+    if mzrows:
+        h.append("<h2>Steering feel: aligning torque</h2><p class='small'>The yaw moment the four tyres put on the sled (N m, all four together), "
+                 "positive when it turns the sled back towards its direction of travel: what a steering wheel feels before the steering geometry and "
+                 "the game's force feedback processing. Slope at low slip = how heavy the wheel feels about the centre; the peak and its slip angle = "
+                 "where it is heaviest; a drop after the peak = the wheel going light as the tyre slides; a sign change = a wheel that pulls the other "
+                 "way. Trail = aligning torque over the sideways force.</p>")
+        h.append("<table><tr><th class='l'>tyre model</th><th class='l'>surface</th><th>peak (N m)</th><th>at (deg)</th><th>slope (N m/deg)</th>"
+                 "<th>trail at low slip (mm)</th><th>at 10&deg; (N m)</th><th>at the end (N m)</th><th>sign change (deg)</th></tr>")
+        for r in mzrows:
+            z = r["m"]["mz"]
+            h.append("<tr><td class='l'>%s</td><td class='l'>%s</td><td><b>%s</b></td><td>%s</td><td>%s</td><td>%s</td><td>%s</td><td>%s</td><td>%s</td></tr>" % (
+                html.escape(FAMILY_NAMES.get(r["family"], r["family"])), html.escape(label_of(r)), fmt(z["peak"], "%.0f"), fmt(z["slip_peak"], "%.1f"),
+                fmt(z["slope"], "%.1f"), fmt(z["trail0"], "%.0f"), fmt(z["at10"], "%.0f"), fmt(z["end"], "%.0f"),
+                "-" if z["zero"] is None else "%.1f" % z["zero"]))
+        h.append("</table>")
     h.append("<h2>Plots</h2>")
     for name, cap in images:
         h.append("<h3>%s</h3><img src='img/%s.png' alt='%s'>" % (html.escape(cap), name, html.escape(cap)))
