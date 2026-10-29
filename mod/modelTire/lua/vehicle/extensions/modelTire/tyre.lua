@@ -85,7 +85,9 @@ local P = {
   fullSoilSoftness = 0.6, -- multiplies the soil's sink factor in the full RBR mode (higher = softer ground, sinks more)
   fullIgnoreCheck = false, -- skip the check that the tyre ring has no collision
   -- SVJ / Pacejka tyre (runs inside the full mode)
-  fullModel = "rbr",          -- "rbr" (RBR 1.02 port) or "svj" (Pacejka from an SVJ file)
+  fullModel = "rbr",          -- "rbr" (RBR 1.02 port), "svj" (Pacejka from an SVJ file) or "brush" (the Advanced brush, brushfull.lua)
+  fullBrushKz = 200000,       -- FULL Advanced brush: vertical stiffness of the tyre, N/m
+  fullBrushGrip = 1.0,        -- FULL Advanced brush: surface friction scale when the ground is not read from the map
   fullEnvelope = true,        -- enveloping contact: several ground samples along the wheel, so steps and kerbs are met smoothly
   fullEnvEvery = 2,           -- update the enveloping samples every N physics steps
   fullHeightTau = 1.5,        -- ms: smoothing of the hub height over the ground (0 = off)
@@ -118,6 +120,7 @@ local rbr = require("extensions/modelTire/rbr102")
 local rbrData = require("extensions/modelTire/rbr102data")
 local pac = require("extensions/modelTire/pacejka")
 local hydro = require("extensions/modelTire/hydro")
+local brushfull = require("extensions/modelTire/brushfull")
 local svjTyre = nil -- the SVJ tyre the player picked (made by the game-side reader), see setSvjTyre
 local rbrTyreNames = {"tarmac", "tarmacWet", "gravel", "snow"}
 local rbrTyreCache = {}
@@ -934,9 +937,13 @@ local function stepWheelFull(s, dt, refPos, doFrame)
     s.hubHf = nil
   end
 
+  local useBrush = P.fullModel == "brush"
   local useSvj = P.fullModel == "svj" and svjTyre ~= nil
   local T, key, st
-  if useSvj then
+  if useBrush then
+    if not s.brushState then s.brushState = brushfull.newState() end
+    st = s.brushState
+  elseif useSvj then
     if not s.pacState or s.pacTyre ~= svjTyre then
       s.pacState = pac.newState(svjTyre, s.radius)
       s.pacTyre = svjTyre
@@ -972,7 +979,15 @@ local function stepWheelFull(s, dt, refPos, doFrame)
   inp.maxLoad = P.fullMaxLoadG * (s.staticLoad or staticFz)
   inp.dampMass = (s.staticLoad or staticFz) / 9.81
   inp.airPressure, inp.effRadius, inp.contactAngle = pressure, s.radius, s.wheelAngle
-  if useSvj then
+  if useBrush then
+    local gmB = detectedGround(s)
+    inp.grip = gmB and (surfaceGrip[gmB] or surfaceGrip[canonGround(gmB) or ""] or defaultSurfaceGrip) or P.fullBrushGrip
+    s.surfaceLabel = gmB and (gmB .. " (x" .. string.format("%.2f", inp.grip) .. ")") or ("manual x" .. string.format("%.2f", P.fullBrushGrip))
+    inp.freeRadius, inp.Re, inp.kz = s.radius, s.radius, P.fullBrushKz
+    inp.progressive, inp.bumpDef = P.svjProgressive, P.svjBumpDef
+    brushfull.step(st, P, nil, inp)
+    s.advT, s.advWear = st.advT, st.advWear
+  elseif useSvj then
     inp.freeRadius = P.svjRadiusFromWheel and s.radius or nil
     local gmS = detectedGround(s)
     inp.grip = gmS and ((autoGrip[gmS] or autoGrip[canonGround(gmS) or ""] or 0.8) * P.svjGripScale) or P.svjGrip
@@ -998,6 +1013,7 @@ local function stepWheelFull(s, dt, refPos, doFrame)
   end
 
   s.hubH = hubH
+  s.hubx, s.huby, s.hubz, s.axx, s.axy, s.axz = hx, hy, hz, ax, ay, az       -- (for the debug drawing)
   if not st.inContact then
     s.Fz, s.Fx, s.Fy, s.sliding, s.muEff, s.patchCount = 0, 0, 0, false, 0, 0
     return
@@ -1435,7 +1451,7 @@ local function sendTelemetry()
         Fz = ps.normalForce, Fx = ps.Fx, Fy = ps.Fy, fz0 = ps.fz0,
       }
     end
-    if P.advBrush and s.advT then
+    if (P.advBrush or (fullIsOn and P.fullModel == "brush")) and s.advT then
       wl[i].surfT, wl[i].treadT, wl[i].wear = s.advT, s.advT, s.advWear or 0   -- one node: the same temperature everywhere
     end
     local st = P.useRbr102 and s.rbrState
@@ -1471,6 +1487,8 @@ local function sendTelemetry()
   if fullIsOn and P.fullModel == "svj" then
     data.model = svjTyre and ((P.svjModded and "FULL Modded SVJ Pacejka " or "FULL SVJ Pacejka ") .. tostring(svjTyre.modelName) .. ": " .. tostring(svjTyre.name))
       or "SVJ Pacejka selected but no tyre sent: running the RBR tyre"
+  elseif fullIsOn and P.fullModel == "brush" then
+    data.model = "FULL Advanced brush"
   elseif fullIsOn then
     local _, key = rbrTyreType()
     data.model = "FULL RBR tyre, " .. (usingRbrData() and "RBR data, " or "own data, ") .. key:gsub("^rbr:", "") ..
@@ -1505,7 +1523,7 @@ local function enable()
     log("E", "modelTire", "No pressure wheels with tread nodes found on this vehicle")
     return
   end
-  for _, s in ipairs(W) do s.dx, s.dy, s.patchCount, s.rbrState, s.gz, s.haveNormal, s.age, s.pacState, s.prevW, s.hubHf, s.envRho, s.envTried = 0, 0, 0, nil, nil, false, 0, nil, nil, nil, nil, false end
+  for _, s in ipairs(W) do s.dx, s.dy, s.patchCount, s.rbrState, s.gz, s.haveNormal, s.age, s.pacState, s.prevW, s.hubHf, s.envRho, s.envTried = 0, 0, 0, nil, nil, false, 0, nil, nil, nil, nil, false; s.brushState = nil end
   setNativeFriction(P.nativeFriction)
   enabled = true
   refreshFull()
@@ -1604,9 +1622,52 @@ local function updateGFX(dt)
   end
 end
 
+-- the FULL modes: where the tyre thinks the ground and its contact are. White cross and grey line: the ground under the hub (what the
+-- height over the ground is measured from); yellow cross and cyan line: the contact point the force acts at (it differs from the point
+-- under the hub on a step, a kerb or a slope: the enveloping contact); orange ring: the tyre's free radius about the hub.
+local function drawFullContacts(refPos)
+  local dd = obj.debugDrawProxy
+  local white, grey, yellow, cyan, orange = color(255, 255, 255, 255), color(150, 150, 150, 255), color(255, 220, 0, 255), color(0, 230, 230, 255), color(255, 140, 0, 255)
+  local function cross(p, r, col)
+    dd:drawLine(p - vec3(r, 0, 0), p + vec3(r, 0, 0), col)
+    dd:drawLine(p - vec3(0, r, 0), p + vec3(0, r, 0), col)
+    dd:drawLine(p - vec3(0, 0, r), p + vec3(0, 0, r), col)
+  end
+  for _, s in ipairs(W) do
+    if s.hubx and s.pgz and s.pwx then
+      local hub = vec3(s.hubx + refPos.x, s.huby + refPos.y, s.hubz + refPos.z)
+      local gp = vec3(s.pwx, s.pwy, s.pgz)
+      cross(gp, 0.05, white)
+      dd:drawLine(hub, gp, grey)
+      if s.axx then
+        -- two axes in the plane of the wheel
+        local ux, uy, uz = s.axy, -s.axx, 0
+        local ul = sqrt(ux * ux + uy * uy)
+        if ul < 1e-3 then ux, uy, uz, ul = 0, s.axz, -s.axy, sqrt(s.axz * s.axz + s.axy * s.axy) end
+        ux, uy, uz = ux / ul, uy / ul, uz / ul
+        local wx, wy, wz = s.axy * uz - s.axz * uy, s.axz * ux - s.axx * uz, s.axx * uy - s.axy * ux
+        local R, prev = s.radius, nil
+        for k = 0, 24 do
+          local a = k * 2 * math.pi / 24
+          local c, sn = math.cos(a) * R, math.sin(a) * R
+          local pt = hub + vec3(ux * c + wx * sn, uy * c + wy * sn, uz * c + wz * sn)
+          if prev then dd:drawLine(prev, pt, orange) end
+          prev = pt
+        end
+      end
+      if s.patchCount > 0 and s.cx then
+        local cp = vec3(s.cx + refPos.x, s.cy + refPos.y, s.cz + refPos.z)
+        cross(cp, 0.07, yellow)
+        dd:drawLine(hub, cp, cyan)
+      end
+    end
+  end
+end
+
 local function onDebugDraw(focusPos)
   if not enabled or not P.debugDraw then return end
   local refPos = obj:getPosition()
+  if fullIsOn then drawFullContacts(refPos) end
   for _, s in ipairs(W) do
     if s.patchCount > 0 and s.Fz > P.minFz then
       local base = vec3(s.cx + refPos.x, s.cy + refPos.y, s.cz + refPos.z)
@@ -1621,7 +1682,7 @@ local function onDebugDraw(focusPos)
 end
 
 local function onReset()
-  for _, s in ipairs(W) do s.dx, s.dy, s.patchCount, s.rbrState, s.age, s.pacState = 0, 0, 0, nil, 0, nil; s.advT, s.advWear = nil, nil end
+  for _, s in ipairs(W) do s.dx, s.dy, s.patchCount, s.rbrState, s.age, s.pacState = 0, 0, 0, nil, 0, nil; s.advT, s.advWear, s.brushState = nil, nil, nil end
   -- a reset reapplies the jbeam friction, so turn ours back on
   if enabled then setNativeFriction(P.nativeFriction) end
 end
@@ -1673,7 +1734,7 @@ M.setRbrCustom = function(list)
 end
 M.setNative = function(on) nativeOn = on and true or false end
 -- the advanced brush's tyres back to the air temperature and new
-M.resetAdv = function() for _, s in ipairs(W) do s.advT, s.advWear = nil, nil end end
+M.resetAdv = function() for _, s in ipairs(W) do s.advT, s.advWear, s.brushState = nil, nil, nil end end
 M._wheels = function() return W end
 
 M.onPhysicsStep = onPhysicsStep

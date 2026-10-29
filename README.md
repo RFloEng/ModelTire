@@ -59,14 +59,24 @@ something the native tyre has no equivalent of; the Pacejka tyre makes it possib
 | 3 | **Full SVJ Pacejka tyre** | the Pacejka vertical spring | yes |
 | 4 | SVJ Pacejka tyre on BeamNG's tyre | BeamNG's tyre | no |
 | 5 | **Advanced brush** | BeamNG's tyre | no |
+| 6 | **Full Advanced brush** | the brush's vertical spring | yes |
 
 - **Light modes (0, 1, 4, 5)** keep BeamNG's soft tyre touching the ground and carrying the load. Only the grip comes from the
   Lua model. BeamNG's tyre flexes in series with the model, so the car feels softer at the first moment of a turn ("double
   flex").
-- **Full modes (2, 3)** take the tyre ring out of the ground contact when the vehicle is loaded (it is marked
+- **Full modes (2, 3, 6)** take the tyre ring out of the ground contact when the vehicle is loaded (it is marked
   non-colliding while the JBeam compiles). The tyre model measures the hub's height over the ground and computes the load,
   the sinking into loose ground and the grip itself. The rim keeps its collision as a safety stop. Switching a full mode on
   or off needs "Reload vehicle".
+- **Full Advanced brush (6)** is the Advanced brush on the full-tyre path: BeamNG's tyre does not touch the ground, the wheel height over
+  the ground gives the load (a vertical spring, setting `fullBrushKz`, stiffer towards the rim) and the brush gives the forces, with the
+  enveloping contact on steps and kerbs, the force on the hub and the wheel-spin torque on the rim like the other full modes. It has the
+  same load, pressure, temperature and wear behaviour as mode 5 and the same brush settings; the surface grip comes from the ground
+  model under the wheel (or the manual surface).
+- **Contact points of the full modes.** With "debugDraw" on, the full modes (2, 3, 6) draw in the 3D view: a white cross and a grey line
+  at the ground under the hub (what the wheel height is measured from), a yellow cross and a cyan line at the contact point the force
+  acts at (it leaves the point under the hub on a step, a kerb or a slope: the enveloping contact), and an orange ring of the tyre's
+  free radius about the hub. A ring that sinks into the ground, or a contact that is not where the tyre meets the ground, shows at once.
 - **Advanced brush (5)** is the test tyre (mode 0, a brush model with relaxation lengths and a friction ellipse) with the things a
   real tyre does on top, all from published tyre physics: its stiffness per newton falls as the load rises (the same shape as the
   Magic Formula's stiffness-against-load term), the stiffness and the grip follow the tyre's own pressure (read from BeamNG's tyre),
@@ -115,7 +125,7 @@ To remove it, delete `mods/unpacked/modelTire` (and `modelTire_rbrdata`, if you 
 | Section | What it does |
 | --- | --- |
 | master switch | turns the Lua tyre on or off for the player's vehicle; everything below is greyed out when it is off |
-| 1. Tyre mode | the five modes, a Reload vehicle button, the rim safety-stop option |
+| 1. Tyre mode | the seven modes, a Reload vehicle button, the rim safety-stop option |
 | 2. Ground surface | automatic detection from terrain, meshes and decal roads, or a manual surface; the ground probe lines |
 | 3. SVJ tyre | the SVJ library browser (filter, list, model choice) and a graphs switch |
 | Tuning | the RBR tyre picker, grip, soil softness, aligning moment, Pacejka grip and load options |
@@ -215,11 +225,17 @@ steering torque; it has no suspension, so the tyre's own vertical dynamics are a
 on the real beam structure with a toy tyre (`tools/rig/`): the forces matched the tyre's true forces within a few newtons and the
 aligning torque within about 1 N m of 62; the structure itself is untested in the game, so expect to adjust it.
 
+**A battery at several loads.** With the single-wheel rig the window offers the loads 1500, 2500, 3500, 5000 and 6500 N (and one more of
+your choice): the whole test is repeated for every ticked load, with the load set exactly by the rig. The report then adds tables of
+the peak grip, the stiffness, the slip at the peak and the aligning torque against the wheel load for every tyre model (the load
+sensitivity: grip over load falls as the load rises, and each model does it differently), followed by the plots of every load. The
+sled has the load of its own weight and ignores the list.
+
 **Automatic test and report (all in the game).** "Automatic test + report ..." (next to the sweep button) runs the sled's slip ramp for
 every tyre model and surface you tick, one after the other, with no input from you. For every run it sets the mode and the surface,
 reloads the vehicle (a run can capsize the sled, and the FULL modes need the reload anyway), waits for the tyre to be ready, puts the
 sled back at its start pose, runs the ramp and keeps the result in `.../current/modelTire/sweeps/batch_<date>/` (one CSV per run plus
-`manifest.json`). The FULL RBR tyre runs on its 19 surfaces, the FULL SVJ Pacejka tyre on its 8; BeamNG's own tyre and the modes that
+`manifest.json`). The FULL RBR tyre runs on its 19 surfaces, the FULL SVJ Pacejka tyre and the FULL Advanced brush on the 8 of the SVJ list; BeamNG's own tyre and the modes that
 keep BeamNG's tyre on the ground run once on the ground under the sled (the game decides that material; to compare them on another one,
 move the sled to another patch and run again). A full run of everything takes about 15 minutes. The window shows the progress and,
 line by line, the result of every finished run (peak grip, slip at the peak, grip at the end, how much of the peak is kept); the

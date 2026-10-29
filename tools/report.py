@@ -19,15 +19,15 @@ acceleration the tyres give) against the mean slip angle of the wheels.
 """
 import argparse, base64, csv, glob, html, io, json, math, os, sys
 
-FAMILY_ORDER = ["vanilla", "brush", "adv_brush", "rbr_light", "svj_light", "rbr_full", "svj_full"]
+FAMILY_ORDER = ["vanilla", "brush", "adv_brush", "rbr_light", "svj_light", "rbr_full", "svj_full", "adv_full"]
 FAMILY_NAMES = {
     "vanilla": "BeamNG vanilla tyre", "brush": "Brush test tyre", "adv_brush": "Advanced brush", "rbr_light": "RBR 1.02 on BeamNG's tyre",
-    "svj_light": "SVJ Pacejka on BeamNG's tyre", "rbr_full": "FULL RBR tyre", "svj_full": "FULL SVJ Pacejka tyre",
+    "svj_light": "SVJ Pacejka on BeamNG's tyre", "rbr_full": "FULL RBR tyre", "svj_full": "FULL SVJ Pacejka tyre", "adv_full": "FULL Advanced brush",
 }
 FAMILY_COLORS = {
-    "vanilla": "#2b7bd6", "brush": "#e07b1f", "adv_brush": "#8a5a2b", "rbr_light": "#3aa04a", "svj_light": "#d8479a", "rbr_full": "#b59a14", "svj_full": "#7d56d6",
+    "vanilla": "#2b7bd6", "brush": "#e07b1f", "adv_brush": "#8a5a2b", "rbr_light": "#3aa04a", "svj_light": "#d8479a", "rbr_full": "#b59a14", "svj_full": "#7d56d6", "adv_full": "#c2410c",
 }
-FORCED = {"rbr_full", "svj_full"}      # families that can be given a surface; the others run on the ground under the sled
+FORCED = {"rbr_full", "svj_full", "adv_full"}      # families that can be given a surface; the others run on the ground under the sled
 
 
 def moving_average(v, n):
@@ -225,7 +225,7 @@ def main():
         save(fig, "refs", "BeamNG's own tyre and the modes that keep BeamNG's tyre on the ground, on the ground under the sled.")
 
     # 2./3. every surface of the FULL modes, the references dashed behind
-    for fam in ("rbr_full", "svj_full"):
+    for fam in ("rbr_full", "svj_full", "adv_full"):
         rs = forced[fam]
         if not rs:
             continue
@@ -248,7 +248,7 @@ def main():
         save(fig, "surfaces_" + fam, "%s, one panel per surface." % FAMILY_NAMES[fam])
 
     # 4. peak grip per surface with the references as lines
-    for fam in ("rbr_full", "svj_full"):
+    for fam in ("rbr_full", "svj_full", "adv_full"):
         rs = forced[fam]
         if not rs:
             continue
@@ -263,7 +263,7 @@ def main():
         save(fig, "peak_" + fam, "Peak grip of %s on every surface; the dashed lines are the reference families on the ground under the sled." % FAMILY_NAMES[fam])
 
     # 5. all surfaces of a FULL family on one plot
-    for fam in ("rbr_full", "svj_full"):
+    for fam in ("rbr_full", "svj_full", "adv_full"):
         rs = forced[fam]
         if len(rs) < 2:
             continue
@@ -294,7 +294,7 @@ def main():
             ax.set_ylim(mzmin, mzmax); ax.grid(alpha=0.3); ax.legend(fontsize=8)
             ax.set_title("Steering feel: aligning torque (restoring = positive)")
             save(fig, "mz_refs", "Aligning torque of the tyre models on the ground under the sled.")
-        for fam in ("rbr_full", "svj_full"):
+        for fam in ("rbr_full", "svj_full", "adv_full"):
             rs = [r for r in mzruns if r["family"] == fam]
             if len(rs) < 1:
                 continue

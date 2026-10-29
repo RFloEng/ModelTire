@@ -20,10 +20,10 @@ local forceScale = im.FloatPtr(0.25)   -- metres of arrow per kN
 
 -- Modes -------------------------------------------------------------------------------------------------------
 -- 0 test tyre (brush)  1 RBR tyre on BeamNG's tyre  2 FULL RBR tyre  3 FULL SVJ Pacejka tyre  4 SVJ Pacejka on BeamNG's tyre
--- 5 advanced brush (the brush with load, pressure, temperature and wear)
-local function isFull(m) return m == 2 or m == 3 end
+-- 5 advanced brush (the brush with load, pressure, temperature and wear)  6 FULL advanced brush (the same brush on the FULL tyre path)
+local function isFull(m) return m == 2 or m == 3 or m == 6 end
 local function isSvj(m) return m == 3 or m == 4 end
-local modeOrder = {0, 5, 1, 4, 2, 3}
+local modeOrder = {0, 5, 1, 4, 2, 3, 6}
 local modePtr = im.IntPtr(0)
 local function mode() return modePtr[0] end
 local modeNames = {
@@ -33,6 +33,7 @@ local modeNames = {
   [3] = "FULL SVJ Pacejka tyre",
   [4] = "SVJ Pacejka tyre on BeamNG's tyre",
   [5] = "Advanced brush (load, pressure, temperature, wear)",
+  [6] = "FULL Advanced brush",
 }
 local modeHelp = {
   [0] = "A simple brush tyre that replaces BeamNG's grip. Only to test that a Lua tyre can drive the car.",
@@ -47,6 +48,9 @@ local modeHelp = {
   [5] = "The brush tyre of the test mode with the things a real tyre does on top: its stiffness per N falls as the load rises, "
     .. "it follows the tyre's pressure, grip depends on temperature (best at about 75 C) and the tyre heats up and wears from sliding. "
     .. "BeamNG's own tyre still carries the load, as in mode 1. Needs no vehicle reload.",
+  [6] = "The Advanced brush (mode 5) on the FULL tyre path, like FULL RBR and FULL SVJ: BeamNG's tyre no longer touches the ground, the wheel "
+    .. "height over the ground gives the load (a spring, 'fullBrushKz') and the brush gives the forces, with the enveloping contact on steps. "
+    .. "Same brush numbers as mode 5 (see the test tyre settings). Needs 'Reload vehicle'.",
 }
 
 -- Settings ----------------------------------------------------------------------------------------------------
@@ -65,7 +69,7 @@ local paramDefs = {
     "How soft loose ground is in the full RBR mode (gravel, dirt, mud, grass, snow). RBR's numbers are for a light rally "
     .. "car; a heavier BeamNG car sinks further. 1 = RBR's soil as it is; lower = firmer ground, the tyre sinks less; "
     .. "higher = softer, sinks more. Mud is RBR's soft wet dirt."},
-  {"mzScale", "f", 0.0, 3.0, 1.0, G_TUNE, {1, 2, 3, 4},
+  {"mzScale", "f", 0.0, 3.0, 1.0, G_TUNE, {1, 2, 3, 4, 6},
     "Strength of the self-aligning torque: what the steering wheel feels (force feedback). 1 = as computed. "
     .. "Raise for more feel, lower if the force feedback is too strong or shakes."},
   {"rbrTyre", "i", 1, 40, 1, G_TUNE, {1, 2},
@@ -84,28 +88,28 @@ local paramDefs = {
   {"rbrLowSpeedZeta", "f", 0, 2, 0.25, G_STAB, {1, 2},
     "Damping of RBR's low-speed 'sticking' spring, as a fraction of critical. 0 = RBR's undamped spring (it rings in "
     .. "BeamNG). Around 0.25 stops the shaking; much higher turns velocity noise into force noise."},
-  {"fullLowSpeedVertZeta", "f", 0, 2, 0.3, G_STAB, {2, 3},
+  {"fullLowSpeedVertZeta", "f", 0, 2, 0.3, G_STAB, {2, 3, 6},
     "Extra vertical damping below about 4 m/s so a parked car does not shake (0 = off). Full modes only."},
-  {"fullUnsprungMass", "f", 10, 100, 30, G_STAB, {2, 3},
+  {"fullUnsprungMass", "f", 10, 100, 30, G_STAB, {2, 3, 6},
     "Mass in kg used to size that damping: about wheel + hub + brake of this car."},
-  {"fullVertDamping", "f", 0, 3000, 600, G_STAB, {2, 3},
+  {"fullVertDamping", "f", 0, 3000, 600, G_STAB, {2, 3, 6},
     "Vertical damping of the tyre in N*s/m. RBR has none (the suspension damper does the work). Raise it if the "
     .. "wheel bounces after bumps."},
-  {"fullEnvelope", "b", nil, nil, true, G_STAB, {2, 3},
+  {"fullEnvelope", "b", nil, nil, true, G_STAB, {2, 3, 6},
     "Enveloping contact for steps and kerbs. A tyre that senses the ground at one point meets a step as a sudden jump. "
     .. "With this on, the wheel also samples the ground ahead and behind the hub (like a rigid wheel of the tyre's radius): "
     .. "the contact moves to the edge of the step and the force tilts forward, so the car climbs it gradually."},
-  {"fullEnvEvery", "i", 1, 8, 2, G_ADV, {2, 3},
+  {"fullEnvEvery", "i", 1, 8, 2, G_ADV, {2, 3, 6},
     "Update the enveloping ground samples every N physics steps (1 = every step: most accurate, slower; 7 raycasts per wheel)."},
-  {"fullHeightTau", "f", 0, 10, 1.5, G_STAB, {2, 3},
+  {"fullHeightTau", "f", 0, 10, 1.5, G_STAB, {2, 3, 6},
     "Milliseconds of smoothing of the hub height over the ground. Takes the edge off single-step jumps; too high makes "
     .. "the tyre spongy (0 = off)."},
-  {"fullSlewKN", "f", 0, 30, 4, G_STAB, {2, 3},
+  {"fullSlewKN", "f", 0, 30, 4, G_STAB, {2, 3, 6},
     "Most the tyre force may change per millisecond, in kN (a spike filter). Protects the wheel beams from sudden "
     .. "impacts. 0 = off; lower = smoother but slower to react."},
-  {"fullMaxLoadG", "f", 2, 20, 6, G_STAB, {2, 3},
+  {"fullMaxLoadG", "f", 2, 20, 6, G_STAB, {2, 3, 6},
     "Cap of the vertical load per wheel, in multiples of the car's static wheel load. A freshly loaded car sits with its rim on the ground, far lower than the tyre expects; without a cap the tyre would throw it into the air."},
-  {"fullFadeIn", "f", 0, 2, 0.3, G_STAB, {2, 3},
+  {"fullFadeIn", "f", 0, 2, 0.3, G_STAB, {2, 3, 6},
     "Seconds over which the tyre forces fade in after the tyre is switched on or the car is reset."},
   {"svjModded", "b", nil, nil, false, G_TUNE, {3, 4},
     "MODDED PACEJKA: adds a hydroplaning layer to the Pacejka tyre. Above a critical speed (about 95 km/h at 2.2 bar, "
@@ -139,10 +143,10 @@ local paramDefs = {
     .. "short ones (about 0.08 m): higher = softer, slower response; lower = sharper."},
   {"svjZeta", "f", 0, 2, 0.25, G_STAB, {3, 4},
     "Same as the low-speed damping above, for the Pacejka contact spring: stops a parked tyre ringing."},
-  {"svjProgressive", "b", nil, nil, true, G_STAB, {3},
+  {"svjProgressive", "b", nil, nil, true, G_STAB, {3, 6},
     "Pacejka has no bump stop. On = the vertical spring stiffens near big deflections (landings), so the rim never "
     .. "reaches the ground. Off = a linear spring straight from the SVJ file."},
-  {"svjBumpDef", "f", 0.01, 0.1, 0.04, G_STAB, {3},
+  {"svjBumpDef", "f", 0.01, 0.1, 0.04, G_STAB, {3, 6},
     "Deflection in m at which the progressive stiffening equals the linear spring. Smaller = hard stop sooner."},
   -- advanced
   {"rbrQuirk102", "b", nil, nil, true, G_ADV, {1, 2},
@@ -157,52 +161,53 @@ local paramDefs = {
     "Use the car's tyre pressure in the Pacejka pressure terms. Off = the pressure written in the SVJ file."},
   {"svjUseTyreDamping", "b", nil, nil, true, G_ADV, {3},
     "Use the vertical damping of the SVJ tyre. Off = fullVertDamping."},
-  {"fullGroundEvery", "i", 1, 8, 1, G_ADV, {2, 3},
+  {"fullGroundEvery", "i", 1, 8, 1, G_ADV, {2, 3, 6},
     "Read the ground height every N physics steps. 1 = every step (most accurate, slightly slower)."},
-  {"fullIgnoreCheck", "b", nil, nil, false, G_ADV, {2, 3},
+  {"fullIgnoreCheck", "b", nil, nil, false, G_ADV, {2, 3, 6},
     "Skip the check that the tyre ring has no ground collision. Only if the window says 'needs reload' even "
     .. "after reloading."},
-  {"debugDraw", "b", nil, nil, true, G_ADV, {1, 2, 3, 4},
+  {"debugDraw", "b", nil, nil, true, G_ADV, {1, 2, 3, 4, 6},
     "Draw force lines at each wheel: green = gripping, red = sliding, blue = load."},
   -- test tyre and the patch used by modes 0 and 1
-  {"mu", "f", 0.3, 2.0, 1.10, G_TEST, {0, 5}, "Test tyre: peak friction coefficient."},
-  {"muSlide", "f", 0.2, 2.0, 0.85, G_TEST, {0, 5}, "Test tyre: friction coefficient when sliding fast."},
-  {"stribeckVel", "f", 0.2, 10.0, 2.5, G_TEST, {0, 5}, "Test tyre: slip speed (m/s) over which grip falls from peak to sliding."},
-  {"muLongScale", "f", 0.7, 1.4, 1.05, G_TEST, {0, 5}, "Test tyre: longitudinal grip relative to sideways grip."},
-  {"loadSens", "f", 0.0, 0.5, 0.12, G_TEST, {0, 5}, "Test tyre: how much grip drops as the load rises."},
-  {"fzNominal", "f", 1000, 8000, 3500, G_TEST, {0, 5}, "Test tyre: load in N where the grip numbers apply."},
-  {"cornerCoef", "f", 4, 60, 28, G_TEST, {0, 5}, "Test tyre: cornering stiffness per N of load. The sideways force peaks at about 3 x mu / this number radians of slip angle."},
-  {"longCoef", "f", 4, 60, 30, G_TEST, {0, 5}, "Test tyre: longitudinal slip stiffness per N of load. The force peaks at about 3 x mu / this number of slip ratio."},
-  {"relaxLenY", "f", 0.05, 1.0, 0.35, G_TEST, {0, 5}, "Test tyre: distance (m) the sideways force takes to build up."},
-  {"relaxLenX", "f", 0.03, 0.6, 0.15, G_TEST, {0, 5}, "Test tyre: distance (m) the longitudinal force takes to build up."},
-  {"dampRatio", "f", 0.0, 2.0, 0.5, G_TEST, {0, 5}, "Test tyre: damping of the carcass spring."},
-  {"trail", "f", 0.0, 0.08, 0.035, G_TEST, {0, 5}, "Test tyre: pneumatic trail in m (self-aligning torque)."},
-  {"crr", "f", 0.0, 0.05, 0.012, G_TEST, {0, 1, 4, 5}, "Rolling resistance coefficient."},
-  {"brushRimTorque", "b", nil, nil, true, G_TEST, {0, 5}, "Test tyre and advanced brush: apply the longitudinal force at the hub and its wheel-spin torque directly on the rim nodes (as the FULL modes do) instead of in the tread nodes. Off = the old way, which makes the wheel speed ring on a stiff test tyre."},
+  {"fullBrushKz", "f", 80000, 400000, 200000, G_TEST, {6}, "FULL Advanced brush: vertical stiffness of the tyre in N/m (load = stiffness x deflection of the free radius over the hub height)."},
+  {"mu", "f", 0.3, 2.0, 1.10, G_TEST, {0, 5, 6}, "Test tyre: peak friction coefficient."},
+  {"muSlide", "f", 0.2, 2.0, 0.85, G_TEST, {0, 5, 6}, "Test tyre: friction coefficient when sliding fast."},
+  {"stribeckVel", "f", 0.2, 10.0, 2.5, G_TEST, {0, 5, 6}, "Test tyre: slip speed (m/s) over which grip falls from peak to sliding."},
+  {"muLongScale", "f", 0.7, 1.4, 1.05, G_TEST, {0, 5, 6}, "Test tyre: longitudinal grip relative to sideways grip."},
+  {"loadSens", "f", 0.0, 0.5, 0.12, G_TEST, {0, 5, 6}, "Test tyre: how much grip drops as the load rises."},
+  {"fzNominal", "f", 1000, 8000, 3500, G_TEST, {0, 5, 6}, "Test tyre: load in N where the grip numbers apply."},
+  {"cornerCoef", "f", 4, 60, 28, G_TEST, {0, 5, 6}, "Test tyre: cornering stiffness per N of load. The sideways force peaks at about 3 x mu / this number radians of slip angle."},
+  {"longCoef", "f", 4, 60, 30, G_TEST, {0, 5, 6}, "Test tyre: longitudinal slip stiffness per N of load. The force peaks at about 3 x mu / this number of slip ratio."},
+  {"relaxLenY", "f", 0.05, 1.0, 0.35, G_TEST, {0, 5, 6}, "Test tyre: distance (m) the sideways force takes to build up."},
+  {"relaxLenX", "f", 0.03, 0.6, 0.15, G_TEST, {0, 5, 6}, "Test tyre: distance (m) the longitudinal force takes to build up."},
+  {"dampRatio", "f", 0.0, 2.0, 0.5, G_TEST, {0, 5, 6}, "Test tyre: damping of the carcass spring."},
+  {"trail", "f", 0.0, 0.08, 0.035, G_TEST, {0, 5, 6}, "Test tyre: pneumatic trail in m (self-aligning torque)."},
+  {"crr", "f", 0.0, 0.05, 0.012, G_TEST, {0, 1, 4, 5, 6}, "Rolling resistance coefficient."},
+  {"brushRimTorque", "b", nil, nil, true, G_TEST, {0, 5, 6}, "Test tyre and advanced brush: apply the longitudinal force at the hub and its wheel-spin torque directly on the rim nodes (as the FULL modes do) instead of in the tread nodes. Off = the old way, which makes the wheel speed ring on a stiff test tyre."},
   {"nativeFriction", "f", 0.0, 1.0, 0.0, G_TEST, {0, 1, 4, 5}, "Fraction of BeamNG's own tyre grip that is kept (0 = off)."},
   {"patchBand", "f", 0.002, 0.05, 0.012, G_TEST, {0, 1, 4, 5}, "Height band (m) of the tyre nodes that count as the contact patch."},
   {"maxPatchNodes", "i", 1, 16, 6, G_TEST, {0, 1, 4, 5}, "Most nodes used in the contact patch."},
   {"patchEverySteps", "i", 1, 20, 4, G_TEST, {0, 1, 4, 5}, "Re-select the patch nodes every N physics steps."},
-  {"slipFromTread", "b", nil, nil, false, G_TEST, {0, 5}, "Test tyre: take slip from the tread nodes instead of hub and wheel speed."},
+  {"slipFromTread", "b", nil, nil, false, G_TEST, {0, 5, 6}, "Test tyre: take slip from the tread nodes instead of hub and wheel speed."},
   {"fzFallback", "b", nil, nil, false, G_TEST, {0, 1, 4, 5}, "If BeamNG reports no wheel load, use the car's static weight share."},
   -- Advanced brush
-  {"advLoadShape", "f", 0.5, 6.0, 2.0, G_TEST, {5}, "Advanced brush: how the stiffness per N falls as the load rises. 0.5 = a lot, 6 = hardly (linear)."},
-  {"advPressureNom", "f", 100, 350, 200, G_TEST, {5}, "Advanced brush: tyre pressure in kPa (gauge) where the stiffness and grip numbers apply. The pressure is read from BeamNG's tyre."},
-  {"advPressureK", "f", 0.0, 1.5, 0.6, G_TEST, {5}, "Advanced brush: the stiffness follows (pressure / nominal) to this power."},
-  {"advPressureMu", "f", 0.0, 2.0, 0.4, G_TEST, {5}, "Advanced brush: grip lost for a pressure away from the nominal (squared)."},
-  {"advTopt", "f", 40, 120, 75, G_TEST, {5}, "Advanced brush: tyre temperature (deg C) with the best grip."},
-  {"advTwidth", "f", 10, 80, 35, G_TEST, {5}, "Advanced brush: how far from the best temperature (deg C) the grip falls off (gaussian width)."},
-  {"advTfloor", "f", 0.2, 1.0, 0.7, G_TEST, {5}, "Advanced brush: grip factor of a tyre far too cold or too hot."},
-  {"advTamb", "f", -20, 50, 20, G_TEST, {5}, "Advanced brush: air temperature (deg C): tyres cool towards it."},
-  {"advTstart", "f", -20, 120, 75, G_TEST, {5}, "Advanced brush: the temperature a tyre starts at, and returns to with the reset button (deg C)."},
-  {"advHeatCap", "f", 1000, 30000, 6000, G_TEST, {5}, "Advanced brush: heat capacity of the tyre that heats up (J/K): a bigger number heats and cools more slowly."},
-  {"advHeatShare", "f", 0.02, 1.0, 0.15, G_TEST, {5}, "Advanced brush: share of the sliding friction power that heats the tyre."},
-  {"advRollHeat", "f", 0.0, 0.05, 0.012, G_TEST, {5}, "Advanced brush: rolling heat in W per N of load per m/s of wheel speed."},
-  {"advCoolBase", "f", 1, 40, 8, G_TEST, {5}, "Advanced brush: cooling at rest in W/K."},
-  {"advCoolSpeed", "f", 0, 5, 1.2, G_TEST, {5}, "Advanced brush: extra cooling in W/K per m/s of speed."},
-  {"advTimeScale", "f", 1, 100, 1, G_TEST, {5}, "Advanced brush: heating, cooling and wear run this many times faster (to see them in a short test)."},
-  {"advWearJ", "f", 2e5, 5e7, 1.2e7, G_TEST, {5}, "Advanced brush: sliding friction energy (J) that wears the tread out."},
-  {"advWearLoss", "f", 0.0, 0.6, 0.25, G_TEST, {5}, "Advanced brush: grip lost with the tread worn out."},
+  {"advLoadShape", "f", 0.5, 6.0, 2.0, G_TEST, {5, 6}, "Advanced brush: how the stiffness per N falls as the load rises. 0.5 = a lot, 6 = hardly (linear)."},
+  {"advPressureNom", "f", 100, 350, 200, G_TEST, {5, 6}, "Advanced brush: tyre pressure in kPa (gauge) where the stiffness and grip numbers apply. The pressure is read from BeamNG's tyre."},
+  {"advPressureK", "f", 0.0, 1.5, 0.6, G_TEST, {5, 6}, "Advanced brush: the stiffness follows (pressure / nominal) to this power."},
+  {"advPressureMu", "f", 0.0, 2.0, 0.4, G_TEST, {5, 6}, "Advanced brush: grip lost for a pressure away from the nominal (squared)."},
+  {"advTopt", "f", 40, 120, 75, G_TEST, {5, 6}, "Advanced brush: tyre temperature (deg C) with the best grip."},
+  {"advTwidth", "f", 10, 80, 35, G_TEST, {5, 6}, "Advanced brush: how far from the best temperature (deg C) the grip falls off (gaussian width)."},
+  {"advTfloor", "f", 0.2, 1.0, 0.7, G_TEST, {5, 6}, "Advanced brush: grip factor of a tyre far too cold or too hot."},
+  {"advTamb", "f", -20, 50, 20, G_TEST, {5, 6}, "Advanced brush: air temperature (deg C): tyres cool towards it."},
+  {"advTstart", "f", -20, 120, 75, G_TEST, {5, 6}, "Advanced brush: the temperature a tyre starts at, and returns to with the reset button (deg C)."},
+  {"advHeatCap", "f", 1000, 30000, 6000, G_TEST, {5, 6}, "Advanced brush: heat capacity of the tyre that heats up (J/K): a bigger number heats and cools more slowly."},
+  {"advHeatShare", "f", 0.02, 1.0, 0.15, G_TEST, {5, 6}, "Advanced brush: share of the sliding friction power that heats the tyre."},
+  {"advRollHeat", "f", 0.0, 0.05, 0.012, G_TEST, {5, 6}, "Advanced brush: rolling heat in W per N of load per m/s of wheel speed."},
+  {"advCoolBase", "f", 1, 40, 8, G_TEST, {5, 6}, "Advanced brush: cooling at rest in W/K."},
+  {"advCoolSpeed", "f", 0, 5, 1.2, G_TEST, {5, 6}, "Advanced brush: extra cooling in W/K per m/s of speed."},
+  {"advTimeScale", "f", 1, 100, 1, G_TEST, {5, 6}, "Advanced brush: heating, cooling and wear run this many times faster (to see them in a short test)."},
+  {"advWearJ", "f", 2e5, 5e7, 1.2e7, G_TEST, {5, 6}, "Advanced brush: sliding friction energy (J) that wears the tread out."},
+  {"advWearLoss", "f", 0.0, 0.6, 0.25, G_TEST, {5, 6}, "Advanced brush: grip lost with the tread worn out."},
 }
 local ptrs, defs = {}, {}
 for _, d in ipairs(paramDefs) do
@@ -278,10 +283,11 @@ local function currentParams()
   local t = {}
   for _, d in ipairs(paramDefs) do t[d[1]] = ptrs[d[1]][0] end
   local m = mode()
-  t.useRbr102 = m >= 1 and m ~= 5
-  t.advBrush = (m == 5)
+  t.useRbr102 = m >= 1 and m ~= 5 and m ~= 6
+  t.advBrush = (m == 5 or m == 6)
   t.fullTyre = isFull(m)
-  t.fullModel = (m == 3) and "svj" or "rbr"
+  t.fullModel = (m == 3) and "svj" or ((m == 6) and "brush" or "rbr")
+  t.fullBrushGrip = svjSurfaces[svjSurfaceIdx][2]
   t.lightModel = (m == 4) and "svj" or "rbr"
   t.fullSurface = fullSurfaces[fullSurfaceIdx]
   t.fullAutoSurface = autoSurface[0]
@@ -975,7 +981,7 @@ local function drawWindow()
       tip(modeHelp[m])
     end
     im.TextWrapped(modeHelp[mode()])
-    if mode() == 5 then
+    if mode() == 5 or mode() == 6 then
       if im.Button("Reset tyre temperature and wear") then sendToVehicle("modelTire_tyre.resetAdv()") end
       im.TextDisabled("The tyres start at the air temperature and new. Raise 'advTimeScale' to see them heat up and wear in a short test.")
     end

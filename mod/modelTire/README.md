@@ -222,7 +222,7 @@ with a commercial tool. The example's coefficients are marked "calculated, low c
 The window has one master switch (`Lua tyre on the player's vehicle`); when it is off everything below is greyed out.
 Then, top to bottom:
 1. **Tyre mode** (one choice): 0 test tyre (brush) | 1 RBR tyre on BeamNG's tyre | 2 FULL RBR tyre | 3 FULL SVJ Pacejka
-   tyre. Modes 2 and 3 need `Reload vehicle` once (BeamNG decides tyre collision when the car is loaded).
+   tyre | 4 SVJ on BeamNG's tyre | 5 Advanced brush | 6 FULL Advanced brush. Modes 2, 3 and 6 need `Reload vehicle` once (BeamNG decides tyre collision when the car is loaded).
 2. **Ground surface**: in the full modes the surface is read from the map's terrain when the map has one (see below),
    else chosen by hand.
 3. **SVJ tyre** (mode 3): the tyre list, model, files folder.
@@ -586,8 +586,8 @@ structure has exactly the 10 free motions of 4 hinges and a rigid body. The sled
 ## Automatic test and report
 
 `batch.lua` (extension `modelTire_batch`, window "ModelTire automatic test", opened from the control window) builds a list of runs:
-the chosen families (vanilla = Lua tyre off, brush, RBR on BeamNG's tyre, SVJ on BeamNG's tyre, FULL RBR, FULL SVJ) and, for the two
-FULL ones, the chosen surfaces (the 19 RBR surfaces, the 8 SVJ ones). The state machine per run: `setup` (ui.lua `testSetup`: mode,
+the chosen families (vanilla = Lua tyre off, brush, Advanced brush, RBR on BeamNG's tyre, SVJ on BeamNG's tyre, FULL RBR, FULL SVJ, FULL Advanced brush)
+and, for the FULL ones, the chosen surfaces (the 19 RBR surfaces, the 8 SVJ ones, which the FULL Advanced brush also uses; its grip is that scale). The state machine per run: `setup` (ui.lua `testSetup`: mode,
 surface, `autoSurface` off, `forceReload`), `ready` (the telemetry says the tyre is in the mode asked for, for 1.5 s; vanilla has no
 telemetry, so a fixed 5 s after the reload), `teleport` (the sled goes to the pose it had when the test started: the reload leaves it
 where the last run ended), `settle` (still for 2 s), `run` (`modelTire_sweep.runRig`), `wait` (until the sweep is idle, with a
@@ -723,3 +723,27 @@ of 62; loads from 1500 to 6500 N, tyre stiffness 120 to 400 kN/m, grip 0.5 to 1.
 a controller that only starts 0.4 s after the spawn, with a small initial roll, still stood up. What the offline model cannot show:
 the real tyre's own dynamics (hysteresis, wheel hop), whether the game applies `obj:applyForceVector` from `onPhysicsStep` to the
 nodes of a pressure-wheel vehicle exactly as it does for the sled (it does for the sled), and how the mesh looks (there are no flexbodies).
+
+## FULL Advanced brush (mode 6), contact-point drawing, load battery
+
+Request: the Advanced brush as a FULL tyre too; draw the contact points of the FULL modes to check them; repeat the tests at several loads.
+
+**`brushfull.lua`** (new, vehicle side) has the interface of `pacejka.lua` (`newState`, `step`; results `inContact`, `L`, `Rl`, `N`, `Flat`, `Flong`,
+`Mz`, `Mfwd`, `rollingTorque`, `normalForce`, `vLat`, `longSlipVel`, `staticF`, `slidingW`), so `stepWheelFull` in `tyre.lua` runs it like the RBR and SVJ
+tyres (`P.fullModel = "brush"`, set by mode 6). Vertical load `Fz = kz * (R_free - hub height)` (setting `fullBrushKz`, default 200 kN/m, with the same
+progressive stiffening towards the rim as the Pacejka tyre, capped by `fullMaxLoadG`). Forces: the brush of `stepWheel` unchanged (load-dependent
+stiffness, pressure, temperature, wear, Stribeck friction, parabolic pressure distribution, friction ellipse, relaxation by exact exponentials), fed by
+the hub velocity and the wheel speed instead of BeamNG's contact. The aligning moment is `-trail * Fy` with the trail fading as the force saturates (the
+light brush gets it from the application points of the patch nodes; here there is a single contact point); rolling resistance is a torque, as in the Pacejka
+tyre. The surface grip is the table of the light brush (`surfaceGrip` by ground model) when the ground is read from the map, else `fullBrushGrip`
+(the manual surface of the SVJ list). Offline (`brushfull.lua` run on a slip ramp at 55 km/h): peak grip over load 1.09, 1.05 and 0.98 g at 2.5, 3.5 and 5 kN, the
+peak at 4 to 5 degrees, the aligning torque restoring and falling to zero as the force saturates.
+
+**Contact points.** `onDebugDraw` in `tyre.lua` calls `drawFullContacts` when a FULL mode is running: the ground under the hub (white cross, grey line to the hub), the
+contact point (yellow cross, cyan line to the hub) and the free-radius ring (orange) about the hub; the points are the ones the force is applied at
+(`s.cx, s.cy, s.cz`), so the picture and the physics cannot differ.
+
+**Load battery.** `batch.lua`: for the single-wheel rig the job list is built once for every chosen load (`chosenLoads`: the ticked loads of 1500 to 6500 N and
+an extra one, default 3500 only); `runRig` gets the load of the job; the tag of a run ends with `_L<load>`; `manifest.json` has `wheelLoads` and the `load` of each
+job; `summary.csv` has a `load_N` column. The report (`writeReport`) puts the tables of the peak, the stiffness, the slip at the peak and the aligning torque by
+load first, then the plots of each load. A run at a single load, or on the sled, gives the report as before.

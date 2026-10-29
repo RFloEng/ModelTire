@@ -27,12 +27,16 @@ local FAMILIES = {
   {key = "svj_light", name = "SVJ Pacejka on BeamNG's tyre", mode = 4, svj = true},
   {key = "rbr_full",  name = "FULL RBR tyre", mode = 2, surfaces = "full"},
   {key = "svj_full",  name = "FULL SVJ Pacejka tyre", mode = 3, svj = true, surfaces = "svj"},
+  {key = "adv_full",  name = "FULL Advanced brush", mode = 6, surfaces = "svj"},
 }
 local famOn = {}
 for _, f in ipairs(FAMILIES) do famOn[f.key] = im.BoolPtr(true) end
 local surfOn = {full = {}, svj = {}}      -- surface name -> BoolPtr, made when the lists are known
 local speedKmh, rampSec, maxSlip = im.FloatPtr(55), im.FloatPtr(12), im.FloatPtr(20)
-local wheelLoad = im.FloatPtr(3500)            -- single-wheel rig only: the load on its wheel (N)
+local wheelLoad = im.FloatPtr(0)               -- single-wheel rig only: one more load on its wheel (N); 0 = none
+local LOADS = {1500, 2500, 3500, 5000, 6500}   -- single-wheel rig only: the loads of the battery (N)
+local loadOn = {}
+for _, n in ipairs(LOADS) do loadOn[n] = im.BoolPtr(n == 3500) end
 local RIG_NAMES = {modelTire_rig = "test sled", modelTire_wheelrig = "single-wheel rig"}
 local winOpen = im.BoolPtr(false)
 
@@ -54,6 +58,21 @@ end
 
 local function isSled(veh)      -- (any of the rigs)
   return rigJbeam(veh) ~= nil
+end
+
+-- the loads of the battery (the single-wheel rig sets its wheel load exactly; the sled has the load of its own weight and ignores this)
+local function chosenLoads()
+  local l = {}
+  for _, n in ipairs(LOADS) do if loadOn[n][0] then l[#l + 1] = n end end
+  if wheelLoad[0] >= 500 then
+    local x = math.floor(wheelLoad[0] + 0.5)
+    local dup = false
+    for _, n in ipairs(l) do if n == x then dup = true end end
+    if not dup then l[#l + 1] = x end
+  end
+  table.sort(l)
+  if #l == 0 then l[1] = 3500 end
+  return l
 end
 
 local function safe(s) return (tostring(s):gsub("[^%w]+", "_")) end
@@ -91,10 +110,22 @@ local function buildJobs()
       end
     end
   end
+  -- the single-wheel rig: the whole set once for every chosen load
+  if rigJbeam(playerVehicle()) == "modelTire_wheelrig" then
+    local loads, all = chosenLoads(), {}
+    for _, ld in ipairs(loads) do
+      for _, j in ipairs(jobs) do
+        local c = {family = j.family, surface = j.surface, load = ld, setup = {}}
+        for k, v in pairs(j.setup) do c.setup[k] = v end
+        all[#all + 1] = c
+      end
+    end
+    jobs = all
+  end
   for i, j in ipairs(jobs) do
     j.setup.forceReload = true
     j.idx = i
-    j.tag = string.format("%02d_%s%s", i, j.family.key, j.surface and ("_" .. safe(j.surface)) or "")
+    j.tag = string.format("%02d_%s%s%s", i, j.family.key, j.surface and ("_" .. safe(j.surface)) or "", j.load and string.format("_L%d", j.load) or "")
     j.status = "waiting"
   end
   return jobs, skipped
@@ -172,7 +203,7 @@ local function analyseMz(mz)
   return r, pts, trail
 end
 
-local FAM_COLOR = {vanilla = "#2b7bd6", brush = "#e07b1f", adv_brush = "#8a5a2b", rbr_light = "#3aa04a", svj_light = "#d8479a", rbr_full = "#b59a14", svj_full = "#7d56d6"}
+local FAM_COLOR = {vanilla = "#2b7bd6", brush = "#e07b1f", adv_brush = "#8a5a2b", rbr_light = "#3aa04a", svj_light = "#d8479a", rbr_full = "#b59a14", svj_full = "#7d56d6", adv_full = "#c2410c"}
 local function hsv(k, n)       -- distinct colours for the surfaces of one family
   local h = (k - 1) / math.max(1, n) * 300
   local c, x = 0.75, 0.75 * (1 - math.abs((h / 60) % 2 - 1))
@@ -224,11 +255,7 @@ local function writeReport()
   local ok = {}
   for _, j in ipairs(S.jobs) do if j.status == "ok" and j.m then ok[#ok + 1] = j end end
   if #ok == 0 then return end
-  local function label(j) return j.surface or ("ground: " .. tostring(j.detected or "?")) end
-  local refs, forced = {}, {rbr_full = {}, svj_full = {}}
-  for _, j in ipairs(ok) do
-    if j.family.surfaces then forced[j.family.key][#forced[j.family.key] + 1] = j else refs[#refs + 1] = j end
-  end
+  local function label(j) return (j.surface or ("ground: " .. tostring(j.detected or "?"))) .. (j.load and string.format(" @ %d N", j.load) or "") end
   local xmax, ymax = 5, 0.5
   for _, j in ipairs(ok) do xmax = math.max(xmax, j.m.maxSlip); ymax = math.max(ymax, j.m.peak * 1.15) end
   local h = {}
@@ -239,7 +266,11 @@ local function writeReport()
     .. "h2{margin-top:30px;border-bottom:1px solid #cdd3da;padding-bottom:4px}</style></head><body>"
   h[#h + 1] = "<h1>ModelTire tyre model test</h1>"
   local rigText = (S.rigName or "test sled")
-  if S.vehicle == "modelTire_wheelrig" then rigText = string.format("single-wheel rig, wheel load %.0f N", S.load or 0) end
+  if S.vehicle == "modelTire_wheelrig" then
+    local ls = {}
+    for _, n in ipairs(S.loads or {S.load or 0}) do ls[#ls + 1] = string.format("%d", n) end
+    rigText = "single-wheel rig, wheel load " .. table.concat(ls, ", ") .. " N"
+  end
   h[#h + 1] = string.format("<p class='small'>%s. %s, %.0f km/h, slip angle ramp to %.0f degrees over %.0f s. SVJ tyre: %s, RBR tyre %s. "
     .. "Lateral force over load (g) against the mean slip angle of the wheels.</p>", esc(S.created), esc(rigText), S.speedKmh, S.maxSlip, S.rampSec,
     esc(S.svjTyre or "none"), esc(S.rbrTyre or "?"))
@@ -253,12 +284,18 @@ local function writeReport()
       m.keep and string.format("%.0f%%", m.keep * 100) or "-", m.noise and string.format("%.1f%%", m.noise * 100) or "-", jit, f2(m.maxSlip, "%.1f"))
   end
   h[#h + 1] = "</table>"
+  -- the plots of one set of runs (one wheel load, or all of them for the sled)
+  local function plots(okSet, tag)
+  local refs, forced = {}, {rbr_full = {}, svj_full = {}, adv_full = {}}
+  for _, j in ipairs(okSet) do
+    if j.family.surfaces then forced[j.family.key][#forced[j.family.key] + 1] = j else refs[#refs + 1] = j end
+  end
   if #refs > 0 then
     local cs = {}
     for _, j in ipairs(refs) do cs[#cs + 1] = {pts = j.pts, color = FAM_COLOR[j.family.key] or "#444", label = j.family.name} end
-    h[#h + 1] = "<h2>Tyre models on the ground under the sled</h2>" .. svgPlot(cs, "lateral force / load (g)", xmax, ymax) .. swatches(cs)
+    h[#h + 1] = "<h2>Tyre models on the ground under the sled" .. tag .. "</h2>" .. svgPlot(cs, "lateral force / load (g)", xmax, ymax) .. swatches(cs)
   end
-  for _, key in ipairs({"rbr_full", "svj_full"}) do
+  for _, key in ipairs({"rbr_full", "svj_full", "adv_full"}) do
     local list = forced[key]
     if #list > 0 then
       local cs, names = {}, {}
@@ -267,13 +304,13 @@ local function writeReport()
         cs[#cs + 1] = {pts = j.pts, color = hsv(k, #list)}
         names[#names + 1] = {color = hsv(k, #list), label = j.surface}
       end
-      h[#h + 1] = "<h2>" .. esc(list[1].family.name) .. ", every surface</h2>"
+      h[#h + 1] = "<h2>" .. esc(list[1].family.name) .. ", every surface" .. tag .. "</h2>"
         .. svgPlot(cs, "lateral force / load (g); dashed: the tyre models on the ground under the sled", xmax, ymax) .. swatches(names)
     end
   end
   -- steering feel: the aligning torque of the four tyres (the yaw moment they put on the sled), restoring = positive
   local mzOk = {}
-  for _, j in ipairs(ok) do if j.mzm and j.mzpts then mzOk[#mzOk + 1] = j end end
+  for _, j in ipairs(okSet) do if j.mzm and j.mzpts then mzOk[#mzOk + 1] = j end end
   if #mzOk > 0 then
     local mmax, mmin = 10, -1
     for _, j in ipairs(mzOk) do
@@ -282,7 +319,7 @@ local function writeReport()
     local what = (S.vehicle == "modelTire_wheelrig")
       and "The aligning torque of the wheel (N m): the torque the steering servo of the single-wheel rig needs to hold the wheel, "
       or "The yaw moment the four tyres put on the sled (N m, all four together), "
-    h[#h + 1] = "<h2>Steering feel: aligning torque</h2><p class='small'>" .. what
+    h[#h + 1] = "<h2>Steering feel: aligning torque" .. tag .. "</h2><p class='small'>" .. what
       .. "positive when it turns the rig back towards its direction of travel. It is what a steering wheel feels before the steering geometry "
       .. "and the game's force feedback processing: the slope at low slip is how heavy the wheel feels about the centre, the peak and its slip "
       .. "angle where it is heaviest, a drop after the peak is the wheel going light as the tyre slides, a sign change a wheel that pulls the "
@@ -303,7 +340,7 @@ local function writeReport()
     if #refc > 0 then
       h[#h + 1] = "<h3>Tyre models on the ground under the sled</h3>" .. svgPlot(refc, "aligning torque of the four tyres (N m)", xmax, mmax, mmin) .. swatches(refc)
     end
-    for _, key in ipairs({"rbr_full", "svj_full"}) do
+    for _, key in ipairs({"rbr_full", "svj_full", "adv_full"}) do
       local list = {}
       for _, j in ipairs(mzOk) do if j.family.key == key then list[#list + 1] = j end end
       if #list > 0 then
@@ -317,6 +354,47 @@ local function writeReport()
           .. svgPlot(cs, "aligning torque (N m); dashed: the tyre models on the ground under the sled", xmax, mmax, mmin) .. swatches(names)
       end
     end
+  end
+  end
+  local byLoad, loadsSeen = {}, {}
+  for _, j in ipairs(ok) do
+    local k = j.load or 0
+    if not byLoad[k] then byLoad[k] = {}; loadsSeen[#loadsSeen + 1] = k end
+    byLoad[k][#byLoad[k] + 1] = j
+  end
+  table.sort(loadsSeen)
+  if #loadsSeen <= 1 then
+    plots(ok, "")
+  else
+    -- the battery of loads: how the peak grip, the stiffness and the steering feel change with the load of the wheel, then the plots of each load
+    local rows, order = {}, {}
+    for _, j in ipairs(ok) do
+      local key = j.family.name .. "|" .. (j.surface or "")
+      if not rows[key] then rows[key] = {j = j, byLoad = {}}; order[#order + 1] = key end
+      rows[key].byLoad[j.load or 0] = j
+    end
+    local function loadTable(title, getter, fmt)
+      h[#h + 1] = "<h2>" .. title .. "</h2><table><tr><th class='l'>tyre model</th><th class='l'>surface</th>"
+      for _, ld in ipairs(loadsSeen) do h[#h + 1] = string.format("<th>%d N</th>", ld) end
+      h[#h + 1] = "</tr>"
+      for _, key in ipairs(order) do
+        local r = rows[key]
+        local cells = {}
+        for _, ld in ipairs(loadsSeen) do
+          local j = r.byLoad[ld]
+          cells[#cells + 1] = "<td>" .. (j and f2(getter(j), fmt) or "-") .. "</td>"
+        end
+        h[#h + 1] = string.format("<tr><td class='l'>%s</td><td class='l'>%s</td>%s</tr>", esc(r.j.family.name), esc(r.j.surface or ("ground: " .. tostring(r.j.detected or "?"))), table.concat(cells))
+      end
+      h[#h + 1] = "</table>"
+    end
+    h[#h + 1] = "<p class='small'>The single-wheel rig repeated the whole test at several wheel loads. Lateral force over load (g) falls as the load rises: "
+      .. "the load sensitivity of the tyre. Compare how each model does it with the others and with BeamNG's own tyre.</p>"
+    loadTable("Peak lateral force over load (g) by wheel load", function(j) return j.m.peak end, "%.2f")
+    loadTable("Stiffness (g per degree) by wheel load", function(j) return j.m.stiff end, "%.3f")
+    loadTable("Slip angle at the peak (deg) by wheel load", function(j) return j.m.slipPeak end, "%.1f")
+    loadTable("Aligning torque peak (N m) by wheel load", function(j) return j.mzm and j.mzm.peak or nil end, "%.0f")
+    for _, ld in ipairs(loadsSeen) do plots(byLoad[ld], string.format(", wheel load %d N", ld)) end
   end
   local bad = {}
   for _, j in ipairs(S.jobs) do if j.status ~= "ok" then bad[#bad + 1] = j end end
@@ -337,11 +415,11 @@ local function writeReport()
       or "<li>The sled has no steering, no drive and no weight transfer: these curves are the tyre alone.</li>")
     .. "<li>Wheel speed jitter: the spread of a wheel's slip ratio over the run. A free-rolling wheel stays near 0 (BeamNG's own tyre: 0.004); red = above 0.05, a wheel speed that rings and starves the lateral force.</li><li>One run per combination: a small difference is not necessarily real. tools/report.py makes the same report with more plots (needs Python and matplotlib).</li></ul></body></html>"
   local base = "/modelTire/sweeps/" .. S.folder .. "/"
-  local csvl = {"family,surface,peak_g,slip_at_peak_deg,stiffness_g_per_deg,g_at_5deg,g_at_10deg,g_end,kept,noise,max_slip_deg,mz_peak_Nm,mz_slip_at_peak_deg,mz_slope_Nm_per_deg,trail_mm,mz_at_10deg_Nm,mz_end_Nm,mz_zero_deg"}
+  local csvl = {"family,surface,load_N,peak_g,slip_at_peak_deg,stiffness_g_per_deg,g_at_5deg,g_at_10deg,g_end,kept,noise,max_slip_deg,mz_peak_Nm,mz_slip_at_peak_deg,mz_slope_Nm_per_deg,trail_mm,mz_at_10deg_Nm,mz_end_Nm,mz_zero_deg"}
   for _, j in ipairs(ok) do
     local m = j.m
     local z = j.mzm or {}
-    csvl[#csvl + 1] = string.format("%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s", j.family.key, label(j), f2(m.peak, "%.4f"), f2(m.slipPeak), f2(m.stiff, "%.4f"),
+    csvl[#csvl + 1] = string.format("%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s", j.family.key, label(j), j.load and tostring(j.load) or "", f2(m.peak, "%.4f"), f2(m.slipPeak), f2(m.stiff, "%.4f"),
       f2(m.g5, "%.4f"), f2(m.g10, "%.4f"), f2(m.gEnd, "%.4f"), f2(m.keep, "%.3f"), f2(m.noise, "%.4f"), f2(m.maxSlip, "%.1f"),
       f2(z.peak, "%.1f"), f2(z.slipPeak, "%.1f"), f2(z.slope, "%.2f"), f2(z.trail0, "%.1f"), f2(z.mz10, "%.1f"), f2(z.mzEnd, "%.1f"), f2(z.zero, "%.1f"))
   end
@@ -364,13 +442,13 @@ local function writeManifest()
   local m = {
     created = S.created, folder = S.folder, finished = S.finished or false, aborted = S.aborted or false,
     speedKmh = S.speedKmh, rampSec = S.rampSec, maxSlip = S.maxSlip, vehicle = S.vehicle or "modelTire_rig",
-    wheelLoad = (S.vehicle == "modelTire_wheelrig") and S.load or nil,
+    wheelLoad = (S.vehicle == "modelTire_wheelrig") and S.load or nil, wheelLoads = S.loads,
     svjTyre = inf.svjTyre, svjFile = inf.svjFile, rbrTyre = inf.rbrTyre, rbrGripScale = inf.rbrGripScale, svjGripScale = inf.svjGripScale,
     families = {}, jobs = {},
   }
   for _, f in ipairs(FAMILIES) do m.families[#m.families + 1] = {key = f.key, name = f.name, surfaces = f.surfaces or "ground"} end
   for _, j in ipairs(S.jobs) do
-    m.jobs[#m.jobs + 1] = {idx = j.idx, family = j.family.key, familyName = j.family.name, surface = j.surface, tag = j.tag,
+    m.jobs[#m.jobs + 1] = {idx = j.idx, family = j.family.key, familyName = j.family.name, surface = j.surface, load = j.load, tag = j.tag,
       status = j.status, reason = j.reason, samples = j.samples, file = j.file, detectedSurface = j.detected, model = j.model,
       staticLoad = j.staticLoad, wheelJitter = j.kappaSd,
       aligning = j.mzm}
@@ -389,14 +467,15 @@ local function ready(job)
   if not tel or clock - telAt > 0.6 then return false end
   if not tel.enabled then return false end
   local mode = job.family.mode
-  local full = (mode == 2 or mode == 3)
+  local full = (mode == 2 or mode == 3 or mode == 6)
   if full and tel.fullState ~= "on" then return false end
   if (not full) and tel.fullState == "on" then return false end
   local m = tostring(tel.model or "")
   if mode == 3 and not m:find("FULL SVJ", 1, true) then return false end
   if mode == 2 and not (m:find("FULL RBR", 1, true) and m:find(job.surface, 1, true)) then return false end
   if mode == 4 and not m:find("SVJ Pacejka on BeamNG", 1, true) then return false end
-  if mode == 5 and not m:find("Advanced brush", 1, true) then return false end
+  if mode == 6 and not m:find("FULL Advanced brush", 1, true) then return false end
+  if mode == 5 and (not m:find("Advanced brush", 1, true) or m:find("FULL", 1, true)) then return false end
   if mode == 1 and not m:find("RBR 1.02", 1, true) then return false end
   return true
 end
@@ -423,7 +502,7 @@ local function nextJob()
   if not j then finishAll(false); return end
   j.status = "running"
   S.phase, S.t, S.stable = "setup", 0, 0
-  S.message = string.format("run %d of %d: %s%s", S.cur, #S.jobs, j.family.name, j.surface and (", " .. j.surface) or "")
+  S.message = string.format("run %d of %d: %s%s%s", S.cur, #S.jobs, j.family.name, j.surface and (", " .. j.surface) or "", j.load and string.format(", %d N", j.load) or "")
   log("I", "modelTire_batch", S.message)
 end
 
@@ -442,8 +521,9 @@ function M.start()
   if not isSled(veh) then S.message = "the automatic test needs a ModelTire rig (spawn the test sled or the single-wheel rig and sit in it)"; return end
   S.vehicle = rigJbeam(veh)
   S.rigName = RIG_NAMES[S.vehicle]
-  S.load = wheelLoad[0]
   local jobs, skipped = buildJobs()
+  S.loads = (S.vehicle == "modelTire_wheelrig") and chosenLoads() or nil
+  S.load = S.loads and S.loads[1] or nil
   if #jobs == 0 then S.message = "nothing to run" .. (skipped[1] and (": " .. skipped[1]) or ""); return end
   S.jobs, S.cur, S.skipped = jobs, 0, skipped
   local p, q = veh:getPosition(), quat(veh:getRotation())
@@ -541,7 +621,7 @@ function M.update(dt)
     if S.stable >= 2.0 and S.t >= 3 then S.phase, S.t = "run", 0
     elseif S.t > 30 then failJob(j, "the rig did not come to rest after the reload") end
   elseif S.phase == "run" then
-    local ok, why = modelTire_sweep.runRig{speedKmh = S.speedKmh, maxSlip = S.maxSlip, rampSec = S.rampSec, load = S.load, dir = S.folder, tag = j.tag}
+    local ok, why = modelTire_sweep.runRig{speedKmh = S.speedKmh, maxSlip = S.maxSlip, rampSec = S.rampSec, load = j.load or S.load, dir = S.folder, tag = j.tag}
     if not ok then failJob(j, tostring(why)); return end
     S.phase, S.t = "wait", 0
   elseif S.phase == "wait" then
@@ -596,14 +676,21 @@ function M.draw()
     for _, f in ipairs(FAMILIES) do im.Checkbox(f.name .. "##fam", famOn[f.key]) end
     if inf then
       checkList("surfaces for FULL RBR (" .. #inf.fullSurfaces .. ")", surfOn.full, inf.fullSurfaces)
-      checkList("surfaces for FULL SVJ Pacejka (" .. #inf.svjSurfaces .. ")", surfOn.svj, inf.svjSurfaces)
+      checkList("surfaces for FULL SVJ Pacejka and FULL Advanced brush (" .. #inf.svjSurfaces .. ")", surfOn.svj, inf.svjSurfaces)
       im.TextDisabled(string.format("SVJ tyre: %s   RBR tyre number: %s", tostring(inf.svjTyre or "none selected"), tostring(inf.rbrTyre)))
     end
     im.PushItemWidth(240)
     im.SliderFloat("speed (km/h)", speedKmh, 20, 120, "%.0f")
     im.SliderFloat("ramp duration (s)", rampSec, 6, 30, "%.0f")
     im.SliderFloat("slip angle at the end (deg)", maxSlip, 8, 40, "%.0f")
-    im.SliderFloat("wheel load (N), single-wheel rig only", wheelLoad, 1000, 8000, "%.0f")
+    im.PopItemWidth()
+    im.Text("Wheel loads (N), single-wheel rig only: the whole test is repeated for each")
+    for k, n in ipairs(LOADS) do
+      if k > 1 then im.SameLine() end
+      im.Checkbox(tostring(n) .. "##load", loadOn[n])
+    end
+    im.PushItemWidth(240)
+    im.SliderFloat("one more load (N, 0 = none)", wheelLoad, 0, 8000, "%.0f")
     im.PopItemWidth()
     if busy then im.EndDisabled() end
 
@@ -644,12 +731,13 @@ function M.draw()
         im.TextWrapped(winPath(S.reportPath))
         if S.openNote then im.TextDisabled(S.openNote) end
       end
-      im.Columns(8, "batchResults", true)
-      for _, hd in ipairs({"tyre model", "surface", "peak g", "at deg", "g at end", "kept", "Mz peak Nm", "Mz slope Nm/deg"}) do im.Text(hd); im.NextColumn() end
+      im.Columns(9, "batchResults", true)
+      for _, hd in ipairs({"tyre model", "surface", "load N", "peak g", "at deg", "g at end", "kept", "Mz peak Nm", "Mz slope Nm/deg"}) do im.Text(hd); im.NextColumn() end
       im.Separator()
       for _, j in ipairs(done) do
         im.Text(j.family.key); im.NextColumn()
         im.Text(tostring(j.surface or ("ground: " .. tostring(j.detected or "?")))); im.NextColumn()
+        im.Text(j.load and tostring(j.load) or "-"); im.NextColumn()
         im.Text(string.format("%.2f", j.m.peak)); im.NextColumn()
         im.Text(string.format("%.1f", j.m.slipPeak)); im.NextColumn()
         im.Text(string.format("%.2f", j.m.gEnd)); im.NextColumn()
