@@ -758,3 +758,25 @@ is `tools/rig/tire_block.txt`; the generators are `tools/rig/gen_wheelrig.py` (s
 it reproduced the previous jbeam byte for byte before this change). Offline, the real `wheelrig.lua` on the new geometry (toy tyre of radius 0.325 m,
 55 km/h): the Fy and Fz errors stay 0 N and the Mz error 0.6 to 1.0 N m at 1.5, 3.5 and 6.5 kN. The matching SVJ set (225/35R18 estimate) is picked
 in the tyre list (search "225/35"); the RBR surface is Tarmac_Fine_Clean_Dry. Not run in the game yet.
+
+## Rolling resistance test
+
+Request: compare the rolling resistance of the tyre models (the BeamNG developers call it one of the less realistic parts of their model); prepare the rig test.
+
+**Controllers.** `wheelrig.lua` and `rig.lua` get `runRoll(maxKmh[, load])`: phase "roll", wheel straight (slip 0) and free-rolling; the speed steps through
+maxKmh/5 ... maxKmh (acceleration 2 m/s^2 between steps); at each step it settles for 2.5 s and then reports `measure = true` for 2.5 s (`step` is the step
+number); then "done". At constant speed the tyre's longitudinal force is minus the rolling resistance (plus the rig's own air drag, the same for every tyre),
+measured by Newton as in the slip ramp (`Fx` along the wheel's heading). Offline with the real `wheelrig.lua` and a toy tyre whose resistance rises with the speed:
+the measured Fx/Fz equals the true one to five digits at 20 to 100 km/h and at 1.5, 3.5 and 6.5 kN; the real `rig.lua` on a mock rigid body too.
+
+**GE side.** `sweep.lua`: new kind "rig rolling resistance" (top speed slider, wheel load slider); samples are kept only while `measure` is true; `rollCurve` gives per
+step {speed km/h, coefficient, force N, load N, samples}; the window plots the coefficient against the speed. `batch.lua`: tests "slip angle ramp" and "rolling
+resistance" (checkboxes, top speed slider); the job list repeats every combination (tyre model, surface, wheel load) for every chosen test (tags end in `_roll`
+for the rolling runs, each on a fresh reload); the report gets a "Rolling resistance" section (coefficient per speed step, mean, increase per 100 km/h, force at
+the top step, plots per wheel load: tyre models on the ground under the rig, and every FULL family on every surface), `rolling.csv`
+(family, surface, load, step, speed, coefficient, force, measured load, samples), and the manifest has `test` and `rolling` per job. `tools/report.py` skips the rolling runs.
+
+**What differs between the models.** BeamNG's own tyre: no explicit coefficient, the resistance comes from the carcass's beam damping and the tyre nodes' drag. Brush
+modes: `crr` (0.012) times the load, constant with speed. FULL Advanced brush: the same. SVJ Pacejka: the file's rolling coefficients (QSY1..QSY8, speed dependent;
+a typical car tyre when the file has none). RBR 1.02: the surface's `rollingResistance` times the patch length. In the modes that keep BeamNG's tyre on the ground
+(RBR on BeamNG's tyre, SVJ on BeamNG's tyre, brush, Advanced brush) the Lua resistance adds to the carcass's. Not run in the game yet.

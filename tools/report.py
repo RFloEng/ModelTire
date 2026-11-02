@@ -149,10 +149,14 @@ def load_folders(folders):
             notes.append("%s has no manifest.json: the runs are taken from the file names" % folder)
             for p in sorted(glob.glob(os.path.join(folder, "*.csv"))):
                 tag = os.path.splitext(os.path.basename(p))[0]
+                if tag.endswith("_roll") or tag in ("summary", "rolling"):
+                    continue
                 parts = tag.split("_", 2)
                 fam = next((k for k in FAMILY_ORDER if tag[3:].startswith(k)), None)
                 jobs.append({"idx": parts[0], "family": fam or "unknown", "tag": tag, "status": "ok", "surface": None})
         for j in jobs:
+            if j.get("test") == "roll" or str(j.get("tag", "")).endswith("_roll"):
+                continue          # (rolling resistance runs are reported by the game's own report; this script does the slip ramps)
             rec = {"folder": folder, "job": j, "family": j.get("family") or "unknown", "surface": j.get("surface"),
                    "detected": j.get("detectedSurface"), "status": j.get("status", "?"), "reason": j.get("reason"), "tag": j.get("tag")}
             if rec["status"] == "ok" and rec["tag"]:

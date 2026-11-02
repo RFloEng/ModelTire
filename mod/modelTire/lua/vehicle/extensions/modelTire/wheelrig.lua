@@ -19,11 +19,15 @@
 --
 -- Phases: stand (holds itself up and still, from the moment the extension loads), settle (speed up), hold (1.5 s), ramp (slip angle
 -- 0 -> max), done (slows down). stop() goes back to stand: the rig must never be left without its controller, it would fall over.
+--
+-- Rolling resistance test (runRoll): phase "roll" with the wheel straight (slip 0) and free-rolling: the speed steps up through a list
+-- (maxKmh / 5, 2 maxKmh / 5, ... maxKmh); at each step it settles for C.ROLL_SETTLE seconds and then reports "measure" for
+-- C.ROLL_MEASURE seconds. At constant speed the tyre's Fx is minus the rolling resistance (plus the rig's own air drag, equal for all tyres).
 
 local M = {}
 
 local g = 9.81
-local C = {KP = 8, KI = 10, A_MAX = 30, KPY = 60, KDY = 14, ACCEL = 2, DECEL = 3, HOLD = 1.5, LOAD_RATE = 2500, TYRE_K = 2.0e5, VZ_ZETA = 0.7, TILT_HZ = 4, TILT_ZETA = 0.7, STEER_HZ = 4, STEER_ZETA = 0.8, STEER_KI = 2, TAU_MAX = 600, WHEEL_YAW_INERTIA = 1.0}
+local C = {KP = 8, KI = 10, A_MAX = 30, KPY = 60, KDY = 14, ACCEL = 2, DECEL = 3, HOLD = 1.5, LOAD_RATE = 2500, TYRE_K = 2.0e5, VZ_ZETA = 0.7, TILT_HZ = 4, TILT_ZETA = 0.7, STEER_HZ = 4, STEER_ZETA = 0.8, STEER_KI = 2, TAU_MAX = 600, WHEEL_YAW_INERTIA = 1.0, ROLL_SETTLE = 2.5, ROLL_MEASURE = 2.5, ROLL_STEPS = 5}
 local CARRIER = {Wi = true, Wo = true, c1 = true, c2 = true, c3 = true, c4 = true}
 
 -- the module's state lives in one table: a Lua function may capture at most 60 upvalues
@@ -140,6 +144,7 @@ local function resetState()
   S.repVx, S.repVy, S.repVz, S.repWc = nil, nil, nil, nil
   S.tPhase = 0
   S.loadNow = nil
+  S.roll, S.rollMeasure = nil, false
 end
 
 local function stand()
@@ -169,9 +174,30 @@ local function run(speedKmh, maxSlipDeg, rampSec, loadN)
   S.aSx, S.aSy, S.aSz, S.aN, S.aT, S.aTau = 0, 0, 0, 0, 0, 0
   S.repVx, S.repVy, S.repVz, S.repWc = nil, nil, nil, nil
   S.tPhase = 0
+  S.roll, S.rollMeasure = nil, false
   log("I", "modelTire_wheelrig", string.format("run: %.1f m/s, slip to %.0f deg over %.0f s, load %.0f N, heading (%.2f, %.2f)", S.cmd.speed, S.cmd.maxSlip, S.cmd.ramp, S.loadSet, S.hx, S.hy))
   if enablePhysicsStepHook then enablePhysicsStepHook() end
   setPhase("settle")
+end
+
+local function runRoll(maxKmh, loadN)
+  if not S.servo then collect() end
+  if not S.servo then return end
+  local top = (maxKmh or 100) / 3.6
+  S.roll = {speeds = {}, idx = 1, t = 0}
+  for k = 1, C.ROLL_STEPS do S.roll.speeds[k] = top * k / C.ROLL_STEPS end
+  S.rollMeasure = false
+  S.cmd.speed = top
+  if loadN and loadN > 0 then S.loadSet = loadN end
+  captureHeading()
+  S.iex, S.iey, S.ieS = 0, 0, 0
+  S.slipNow, S.vcmd = 0, 0
+  S.aSx, S.aSy, S.aSz, S.aN, S.aT, S.aTau = 0, 0, 0, 0, 0, 0
+  S.repVx, S.repVy, S.repVz, S.repWc = nil, nil, nil, nil
+  S.tPhase = 0
+  log("I", "modelTire_wheelrig", string.format("roll: %d steps up to %.1f m/s, load %.0f N, heading (%.2f, %.2f)", C.ROLL_STEPS, top, S.loadSet, S.hx, S.hy))
+  if enablePhysicsStepHook then enablePhysicsStepHook() end
+  setPhase("roll")
 end
 
 local function setLoad(n)
@@ -218,6 +244,20 @@ local function onPhysicsStep(dt)
     S.slipNow = math.rad(S.cmd.maxSlip) * u
     alphaDot = (u < 1) and math.rad(S.cmd.maxSlip) / S.cmd.ramp or 0
     if S.tPhase >= S.cmd.ramp + 0.5 then setPhase("done") end
+  elseif S.phase == "roll" then
+    local r = S.roll
+    local target = r.speeds[r.idx]
+    if S.vcmd < target then
+      S.vcmd = math.min(target, S.vcmd + C.ACCEL * dt)
+      S.rollMeasure = false
+    elseif speedNow > target - 0.3 then
+      r.t = r.t + dt
+      S.rollMeasure = r.t >= C.ROLL_SETTLE
+      if r.t >= C.ROLL_SETTLE + C.ROLL_MEASURE then
+        r.idx, r.t, S.rollMeasure = r.idx + 1, 0, false
+        if r.idx > #r.speeds then setPhase("done") end
+      end
+    end
   elseif S.phase == "done" then
     S.vcmd = math.max(0, S.vcmd - C.DECEL * dt)
   end
@@ -225,7 +265,7 @@ local function onPhysicsStep(dt)
   -- horizontal: the rig goes straight at S.vcmd along its heading (the slip angle is made by turning the wheel, not the rig)
   local tvx, tvy = S.vcmd * S.hx, S.vcmd * S.hy
   local tax, tay = 0, 0
-  if S.phase == "settle" then tax, tay = S.hx * C.ACCEL, S.hy * C.ACCEL end
+  if S.phase == "settle" or (S.phase == "roll" and S.vcmd < S.roll.speeds[S.roll.idx]) then tax, tay = S.hx * C.ACCEL, S.hy * C.ACCEL end
   local ex, ey = tvx - vx, tvy - vy
   S.iex = math.max(-C.A_MAX / C.KI, math.min(C.A_MAX / C.KI, S.iex + ex * dt))
   S.iey = math.max(-C.A_MAX / C.KI, math.min(C.A_MAX / C.KI, S.iey + ey * dt))
@@ -322,7 +362,8 @@ local function report()
   end
   S.aSx, S.aSy, S.aSz, S.aN, S.aT, S.aTau = 0, 0, 0, 0, 0, 0
   return {phase = S.phase, Mz = S.lastMz, slip = math.deg(S.slipNow), speed = S.lastSpeed, Fx = S.lastFx, Fy = S.lastFy, Fz = S.lastFz,
-    load = (S.lastFz > 100) and S.lastFz or S.loadSet, maxSlip = S.cmd.maxSlip, ramp = S.cmd.ramp, steer = S.lastSteer, rigKind = "wheel"}
+    load = (S.lastFz > 100) and S.lastFz or S.loadSet, maxSlip = S.cmd.maxSlip, ramp = S.cmd.ramp, steer = S.lastSteer, rigKind = "wheel",
+    measure = S.rollMeasure and true or false, step = S.roll and S.roll.idx or 0}
 end
 
 local function onReset()
@@ -337,6 +378,7 @@ local function onExtensionLoaded()
 end
 
 M.run = run
+M.runRoll = runRoll
 M.stop = stop
 M.setLoad = setLoad
 M.report = report

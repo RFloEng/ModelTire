@@ -19,6 +19,9 @@
 -- before the steering geometry: the aligning torque of the four tyres plus the small difference of front and rear side forces.
 --
 -- Phases: settle (speed up to the target, slip 0), hold (1.5 s, the load settles), ramp (slip 0 -> max), done.
+-- Rolling resistance test (runRoll): phase "roll", slip 0, free-rolling wheels: the speed steps up through maxKmh / 5, 2 maxKmh / 5, ...
+-- maxKmh; at each step it settles for ROLL_SETTLE seconds and then reports "measure" for ROLL_MEASURE seconds. At constant speed the
+-- tyres' Fx is minus their rolling resistance (plus the sled's own air drag, equal for all tyres).
 
 local M = {}
 
@@ -29,6 +32,8 @@ local A_MAX = 30                -- servo acceleration limit (m/s^2), above any t
 local KPY, KDY = 60, 14         -- yaw hold (rad/s^2 per rad, per rad/s)
 local ACCEL = 2                 -- acceleration of the settle phase (m/s^2)
 local HOLD = 1.5
+local ROLL_SETTLE, ROLL_MEASURE, ROLL_STEPS = 2.5, 2.5, 5
+local RL = {measure = false}   -- the rolling test: speeds, idx, t, measure
 
 local phase = "off"
 local servoNodes = nil          -- the cids of the force nodes ("sv_*" in the jbeam)
@@ -110,6 +115,7 @@ end
 local function stop()
   setPhase("off")
   iex, iey = 0, 0
+  RL.speeds, RL.measure = nil, false
 end
 
 local function run(speedKmh, maxSlipDeg, rampSec)
@@ -132,6 +138,15 @@ local function run(speedKmh, maxSlipDeg, rampSec)
   -- the game only calls an extension's onPhysicsStep after this has been asked for
   if enablePhysicsStepHook then enablePhysicsStepHook() end
   setPhase("settle")
+end
+
+local function runRoll(maxKmh)
+  run(maxKmh, 0, 2)        -- (the common start: heading, servo and window reset)
+  local top = (maxKmh or 100) / 3.6
+  RL.speeds, RL.idx, RL.t, RL.measure = {}, 1, 0, false
+  for k = 1, ROLL_STEPS do RL.speeds[k] = top * k / ROLL_STEPS end
+  log("I", "modelTire_rig", string.format("roll: %d steps up to %.1f m/s", ROLL_STEPS, top))
+  setPhase("roll")
 end
 
 -- every physics step
@@ -166,6 +181,19 @@ local function onPhysicsStep(dt)
   elseif phase == "hold" then
     vcmd = cmd.speed
     if tPhase >= HOLD then setPhase("ramp"); tPhase = 0 end
+  elseif phase == "roll" then
+    local target = RL.speeds[RL.idx]
+    if vcmd < target then
+      vcmd = math.min(target, vcmd + ACCEL * dt)
+      RL.measure = false
+    elseif speedNow > target - 0.3 then
+      RL.t = RL.t + dt
+      RL.measure = RL.t >= ROLL_SETTLE
+      if RL.t >= ROLL_SETTLE + ROLL_MEASURE then
+        RL.idx, RL.t, RL.measure = RL.idx + 1, 0, false
+        if RL.idx > #RL.speeds then setPhase("done") end
+      end
+    end
   elseif phase == "ramp" then
     vcmd = cmd.speed
     local u = math.min(tPhase / cmd.ramp, 1)
@@ -178,7 +206,7 @@ local function onPhysicsStep(dt)
   local ca, sa = math.cos(slipNow), math.sin(slipNow)
   local tvx, tvy = vcmd * (hx * ca + lx * sa), vcmd * (hy * ca + ly * sa)
   local tax, tay = vcmd * alphaDot * (-hx * sa + lx * ca), vcmd * alphaDot * (-hy * sa + ly * ca)
-  if phase == "settle" then tax, tay = hx * ACCEL, hy * ACCEL end
+  if phase == "settle" or (phase == "roll" and vcmd < RL.speeds[RL.idx]) then tax, tay = hx * ACCEL, hy * ACCEL end
 
   local ex, ey = tvx - vx, tvy - vy
   iex = math.max(-A_MAX / KI, math.min(A_MAX / KI, iex + ex * dt))
@@ -243,7 +271,7 @@ local function report()
   aSx, aSy, aN, aT = 0, 0, 0, 0
   aTq = 0
   return {phase = phase, Mz = lastMz, slip = math.deg(slipNow), speed = lastSpeed, Fx = lastFx, Fy = lastFy, load = totalMass * g,
-    maxSlip = cmd.maxSlip, ramp = cmd.ramp}
+    maxSlip = cmd.maxSlip, ramp = cmd.ramp, measure = RL.measure, step = RL.idx or 0}
 end
 
 local function onReset()
@@ -252,6 +280,7 @@ local function onReset()
 end
 
 M.run = run
+M.runRoll = runRoll
 M.stop = stop
 M.report = report
 M.onPhysicsStep = onPhysicsStep

@@ -19,11 +19,13 @@ M.dependencies = {"ui_imgui"}
 
 local im = ui_imgui
 
-local KINDS = {"steering ramp", "braking ramp", "throttle ramp", "rig slip ramp"}
+local KINDS = {"steering ramp", "braking ramp", "throttle ramp", "rig slip ramp", "rig rolling resistance"}
 local kindIdx = 1
 local RIG_KIND = "rig slip ramp"
+local ROLL_KIND = "rig rolling resistance"     -- the rigs roll straight at five speed steps; the resistance is minus Fx over Fz
 -- lateral kinds plot force against slip angle; the others against slip ratio
 local function isLat(kind) return kind == "steering ramp" or kind == RIG_KIND end
+local function isRig(kind) return kind == RIG_KIND or kind == ROLL_KIND end
 local VIEWS = {"car (total)", "per axle", "per wheel"}
 local viewIdx = 1
 local targetKmh = im.FloatPtr(55)
@@ -31,6 +33,7 @@ local duration = im.FloatPtr(12)
 local steerMax = im.FloatPtr(0.45)
 local rigSlipMax = im.FloatPtr(20)
 local rigLoad = im.FloatPtr(3500)
+local rollKmh = im.FloatPtr(100)               -- top speed of the rolling resistance test (five steps up to it)
 -- the rigs (vehicle name -> name and controller extension): the test sled and the single-wheel rig
 local RIGS = {modelTire_rig = {ext = "modelTire_rig", name = "test sled"},
   modelTire_wheelrig = {ext = "modelTire_wheelrig", name = "single-wheel rig"}}
@@ -84,6 +87,26 @@ end
 
 local curve   -- (defined below; finish needs it)
 
+-- rolling resistance of a run: per speed step the mean {speed km/h, coefficient (-Fx / load), force N, load N, samples}
+local function rollCurve(run)
+  local by, order = {}, {}
+  for _, s in ipairs(run.samples) do
+    local r = s.rig
+    if r and r.step and r.step > 0 and (r.load or 0) > 100 then
+      local b = by[r.step]
+      if not b then b = {n = 0, v = 0, fx = 0, ld = 0}; by[r.step] = b; order[#order + 1] = r.step end
+      b.n, b.v, b.fx, b.ld = b.n + 1, b.v + s.v, b.fx + (r.Fx or 0), b.ld + r.load
+    end
+  end
+  table.sort(order)
+  local pts = {}
+  for _, k in ipairs(order) do
+    local b = by[k]
+    pts[#pts + 1] = {b.v / b.n * 3.6, -b.fx / b.ld, -b.fx / b.n, b.ld / b.n, b.n}
+  end
+  return pts
+end
+
 local function finish(reason)
   if current and current.rig then
     local veh = playerVehicle()
@@ -133,7 +156,7 @@ local function finish(reason)
     end
     -- the tyres' yaw moment (aligning torque) against the mean slip angle: {slip deg, Mz N m, |Fy| N}
     local mzPts = {}
-    if current.rig then
+    if current.rig and current.kind ~= ROLL_KIND then
       for _, smp in ipairs(current.samples) do
         local sl, n = 0, 0
         for _, w in ipairs(smp.w) do sl, n = sl + math.deg(math.abs(w.alpha or 0)), n + 1 end
@@ -142,7 +165,8 @@ local function finish(reason)
     end
     lastResult = {ok = (reason == "finished") and ok, kappaSd = kn > 0 and ksum / kn or nil, mz = mzPts, reason = reason, samples = #current.samples, path = ok and path or nil,
       label = current.label, surface = current.surface, model = current.model, staticLoad = current.staticLoad,
-      curve = current.rig and curve(current, true) or nil}   -- {slip deg, lateral force / load}, for the automatic test's report
+      curve = (current.rig and current.kind ~= ROLL_KIND) and curve(current, true) or nil,   -- {slip deg, lateral force / load}, for the automatic test's report
+      roll = (current.kind == ROLL_KIND) and rollCurve(current) or nil, kind = current.kind}
   else
     status = reason .. " (nothing recorded)"
     lastResult = {ok = false, reason = reason, samples = current and #current.samples or 0}
@@ -155,7 +179,8 @@ local function start(batch)
   local veh = playerVehicle()
   lastResult = nil
   if not veh then status = "no player vehicle"; return end
-  local rig = KINDS[kindIdx] == RIG_KIND
+  local roll = KINDS[kindIdx] == ROLL_KIND
+  local rig = KINDS[kindIdx] == RIG_KIND or roll
   local rigDef = nil
   if rig then
     local jb = veh.jbeam
@@ -170,12 +195,18 @@ local function start(batch)
   setNative(true)
   current = {label = modeLabel(lastTelemetry), kind = KINDS[kindIdx], samples = {}, staticLoad = nil,
     native = not (lastTelemetry and lastTelemetry.enabled), wheelStatic = {}, rig = rig, batch = batch,
-    note = string.format("%.0f km/h, %.0f s%s", targetKmh[0], duration[0], KINDS[kindIdx] == "steering ramp" and string.format(", lock %.2f", steerMax[0])
+    note = KINDS[kindIdx] == ROLL_KIND and string.format("5 steps up to %.0f km/h", rollKmh[0]) or string.format("%.0f km/h, %.0f s%s", targetKmh[0], duration[0], KINDS[kindIdx] == "steering ramp" and string.format(", lock %.2f", steerMax[0])
       or (rig and string.format(", to %.0f deg", rigSlipMax[0]) or ""))}
   runT, t = 0, 0
   if rig then
     -- the sled drives itself (modelTire_rig): speeds up, holds, then ramps the slip angle; this side records
-    if rigDef.ext == "modelTire_wheelrig" then
+    if roll then
+      if rigDef.ext == "modelTire_wheelrig" then
+        veh:queueLuaCommand(string.format("extensions.load('modelTire_wheelrig'); modelTire_wheelrig.runRoll(%.2f, %.0f)", rollKmh[0], rigLoad[0]))
+      else
+        veh:queueLuaCommand(string.format("extensions.load('modelTire_rig'); modelTire_rig.runRoll(%.2f)", rollKmh[0]))
+      end
+    elseif rigDef.ext == "modelTire_wheelrig" then
       veh:queueLuaCommand(string.format("extensions.load('modelTire_wheelrig'); modelTire_wheelrig.run(%.2f, %.2f, %.2f, %.0f)",
         targetKmh[0], rigSlipMax[0], duration[0], rigLoad[0]))
     else
@@ -183,7 +214,7 @@ local function start(batch)
     end
     current.rigName = rigDef.name
     state = "accelerate"
-    status = rigDef.name .. " accelerating to " .. string.format("%.0f", targetKmh[0]) .. " km/h"
+    status = rigDef.name .. " accelerating to " .. string.format("%.0f", roll and rollKmh[0] / 5 or targetKmh[0]) .. " km/h"
     return
   end
   state = "accelerate"
@@ -213,7 +244,18 @@ end
 local function rigUpdate(dt, v)
   t = t + dt
   local rg = lastTelemetry and lastTelemetry.rig
-  if rg and rg.phase == "ramp" then
+  if rg and rg.phase == "roll" then
+    if state ~= "run" then state, runT = "run", 0 end
+    runT = runT + dt
+    status = string.format("rig: rolling step %d of 5, %.0f km/h%s", rg.step or 0, (rg.speed or 0) * 3.6, rg.measure and " (measuring)" or "")
+    if newSample and lastTelemetry.wheels then
+      newSample = false
+      if rg.measure then
+        recordSample({t = runT, v = v, steer = 0, throttle = 0, brake = 0, acc = {0, 0}, rack = nil, w = {},
+          rig = {Fx = rg.Fx, Fy = rg.Fy, load = rg.load, slip = 0, Mz = rg.Mz, step = rg.step}})
+      end
+    end
+  elseif rg and rg.phase == "ramp" then
     if state ~= "run" then state, runT = "run", 0 end
     runT = runT + dt
     status = string.format("rig: slip %.1f deg of %.0f", rg.slip or 0, rg.maxSlip or 0)
@@ -378,10 +420,16 @@ local function plot(id, w, h, lateral, xmax, xlabel, ylabel, group, title, quant
   im.InvisibleButton(id, im.ImVec2(w, h))
   local L, T, R, B = pos.x + 44, pos.y + 6, pos.x + w - 8, pos.y + h - 20
   im.ImDrawList_AddRectFilled(dl, im.ImVec2(L, T), im.ImVec2(R, B), col(0.08, 0.09, 0.11, 0.9))
-  local curves, ymax = {}, (quantity == "rack") and 100 or 0.5
+  local roll = quantity == "roll"
+  local function fits(r)
+    if roll then return r.kind == ROLL_KIND end
+    if r.kind == ROLL_KIND then return false end
+    return (lateral and isLat(r.kind)) or (not lateral and not isLat(r.kind))
+  end
+  local curves, ymax = {}, roll and 0.02 or ((quantity == "rack") and 100 or 0.5)
   for _, r in ipairs(runs) do
-    if r.visible and ((lateral and isLat(r.kind)) or (not lateral and not isLat(r.kind))) then
-      local c = (quantity == "rack") and rackCurve(r) or curve(r, lateral, group)
+    if r.visible and fits(r) then
+      local c = roll and rollCurve(r) or ((quantity == "rack") and rackCurve(r) or curve(r, lateral, group))
       curves[#curves + 1] = {c = c, color = r.color, label = r.label, dotted = group and r.native}
       for _, p in ipairs(c) do if math.abs(p[2]) > ymax then ymax = math.abs(p[2]) end end
     end
@@ -389,10 +437,10 @@ local function plot(id, w, h, lateral, xmax, xlabel, ylabel, group, title, quant
   -- theoretical curve of the selected tyre, from the first visible run's static load
   local ref
   for _, r in ipairs(runs) do
-    if r.visible and ((lateral and isLat(r.kind)) or (not lateral and not isLat(r.kind))) then ref = r; break end
+    if r.visible and fits(r) then ref = r; break end
   end
   local theory, theoryName
-  if ref and quantity ~= "rack" then theory, theoryName = theoryCurve(lateral, ref, group) end
+  if ref and quantity ~= "rack" and not roll then theory, theoryName = theoryCurve(lateral, ref, group) end
   if theory then for _, p in ipairs(theory) do if p[2] > ymax then ymax = p[2] end end end
   ymax = ymax * 1.1
   local function sx(x) return L + math.min(x / xmax, 1) * (R - L) end
@@ -401,7 +449,7 @@ local function plot(id, w, h, lateral, xmax, xlabel, ylabel, group, title, quant
   for k = 0, 4 do
     local gy = B - k / 4 * (B - T)
     im.ImDrawList_AddLine(dl, im.ImVec2(L, gy), im.ImVec2(R, gy), col(1, 1, 1, 0.08), 1)
-    im.ImDrawList_AddText1(dl, im.ImVec2(L - 40, gy - 6), txt, string.format("%.2f", ymax * k / 4), nil)
+    im.ImDrawList_AddText1(dl, im.ImVec2(L - 40, gy - 6), txt, string.format(roll and "%.4f" or "%.2f", ymax * k / 4), nil)
     local gx = L + k / 4 * (R - L)
     im.ImDrawList_AddText1(dl, im.ImVec2(gx - 10, B + 3), txt, string.format(xmax > 2 and "%.0f" or "%.2f", xmax * k / 4), nil)
   end
@@ -421,7 +469,7 @@ local function plot(id, w, h, lateral, xmax, xlabel, ylabel, group, title, quant
     -- plot between unrelated points is noise, not a curve. Points past the end of the axis are not drawn at all.
     for k = 1, #c - 1 do
       local a, b = c[k], c[k + 1]
-      if a[1] <= xmax and b[1] <= xmax and math.abs(b[1] - a[1]) < 0.12 * xmax and math.abs(b[2] - a[2]) < 0.2 * ymax
+      if a[1] <= xmax and b[1] <= xmax and (roll or (math.abs(b[1] - a[1]) < 0.12 * xmax and math.abs(b[2] - a[2]) < 0.2 * ymax))
           and (not cv.dotted or k % 2 == 1) then   -- a vanilla run seen per wheel is an estimate: drawn dashed
         im.ImDrawList_AddLine(dl, im.ImVec2(sx(a[1]), sy(math.max(a[2], 0))), im.ImVec2(sx(b[1]), sy(math.max(b[2], 0))), rgba, 2)
       end
@@ -440,6 +488,10 @@ function M.runRig(opts)
   for i, k in ipairs(KINDS) do if k == RIG_KIND then kindIdx = i end end
   targetKmh[0], rigSlipMax[0], duration[0] = opts.speedKmh or targetKmh[0], opts.maxSlip or rigSlipMax[0], opts.rampSec or duration[0]
   rigLoad[0] = opts.load or rigLoad[0]
+  if opts.test == "roll" then
+    for i, k in ipairs(KINDS) do if k == ROLL_KIND then kindIdx = i end end
+    rollKmh[0] = opts.rollKmh or rollKmh[0]
+  end
   start({dir = opts.dir, tag = opts.tag})
   return state ~= "idle", status
 end
@@ -461,12 +513,21 @@ function M.draw()
       for i, k in ipairs(KINDS) do if im.Selectable1(k, i == kindIdx) then kindIdx = i end end
       im.EndCombo()
     end
-    im.SliderFloat("speed (km/h)", targetKmh, 20, 120, "%.0f")
-    im.SliderFloat("ramp duration (s)", duration, 4, 30, "%.0f")
+    if KINDS[kindIdx] == ROLL_KIND then
+      im.SliderFloat("top speed (km/h), five steps up to it", rollKmh, 50, 160, "%.0f")
+    else
+      im.SliderFloat("speed (km/h)", targetKmh, 20, 120, "%.0f")
+      im.SliderFloat("ramp duration (s)", duration, 4, 30, "%.0f")
+    end
     if KINDS[kindIdx] == "steering ramp" then im.SliderFloat("steering at the end (0-1)", steerMax, 0.1, 1.0, "%.2f") end
     if KINDS[kindIdx] == RIG_KIND then
       im.SliderFloat("slip angle at the end (deg)", rigSlipMax, 5, 40, "%.0f")
+    end
+    if isRig(KINDS[kindIdx]) then
       im.SliderFloat("wheel load (N), single-wheel rig", rigLoad, 1000, 8000, "%.0f")
+    end
+    if KINDS[kindIdx] == ROLL_KIND then
+      im.TextDisabled("Rolling straight and free at five speed steps (2.5 s to settle, 2.5 s to measure each). Needs about 700 m of straight flat ground at 100 km/h.")
     end
     im.PopItemWidth()
     if state == "idle" then
@@ -496,6 +557,16 @@ function M.draw()
     for _, r in ipairs(runs) do
       if r.samples[1] then for i, w in ipairs(r.samples[1].w) do names[i] = tostring(w.name) end break end
     end
+    local hasRoll, rollMax = false, 0
+    for _, r in ipairs(runs) do
+      if r.visible and r.kind == ROLL_KIND then
+        hasRoll = true
+        for _, p in ipairs(rollCurve(r)) do rollMax = math.max(rollMax, p[1]) end
+      end
+    end
+    if hasRoll then
+      plot("##swroll", 480, 230, false, math.max(20, math.ceil(rollMax / 20) * 20), "speed (km/h)", "rolling resistance", nil, "rolling resistance coefficient (-Fx / Fz) vs speed", "roll")
+    end
     if viewIdx == 1 or #names == 0 then
       plot("##swlat", 480, 230, true, latMax, "slip angle (deg)", "lateral acceleration (g)")
       plot("##swlon", 480, 230, false, 0.5, "slip ratio", "longitudinal acceleration (g)")
@@ -512,7 +583,7 @@ function M.draw()
       end
       local hasLat, hasLon = false, false
       for _, r in ipairs(runs) do
-        if r.visible then
+        if r.visible and r.kind ~= ROLL_KIND then
           if isLat(r.kind) then hasLat = true else hasLon = true end
         end
       end

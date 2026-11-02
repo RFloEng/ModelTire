@@ -225,6 +225,14 @@ steering torque; it has no suspension, so the tyre's own vertical dynamics are a
 on the real beam structure with a toy tyre (`tools/rig/`): the forces matched the tyre's true forces within a few newtons and the
 aligning torque within about 1 N m of 62; the structure itself is untested in the game, so expect to adjust it.
 
+**Rolling resistance test.** The BeamNG developers say the rolling resistance is one of the least realistic parts of their tyre model, so
+both rigs have a second test, "rig rolling resistance" (sweep window, and a checkbox of the automatic test): the wheel rolls straight, free
+(no drive, no brake) at five speed steps up to a top speed (default 100 km/h), 2.5 s to settle and 2.5 s to measure at each, and the
+resistance coefficient is minus the longitudinal force over the load. The automatic test repeats it for every chosen tyre model, surface
+and wheel load and the report adds a table of the coefficient at every speed (with its mean and its increase per 100 km/h) and plots of
+the coefficient against the speed, so BeamNG's own tyre, the brush modes (constant coefficient), the SVJ library's coefficients and RBR's
+per-surface value can be laid side by side. It needs about 700 m of straight, flat ground at 100 km/h.
+
 **A battery at several loads.** With the single-wheel rig the window offers the loads 1500, 2500, 3500, 5000 and 6500 N (and one more of
 your choice): the whole test is repeated for every ticked load, with the load set exactly by the rig. The report then adds tables of
 the peak grip, the stiffness, the slip at the peak and the aligning torque against the wheel load for every tyre model (the load
