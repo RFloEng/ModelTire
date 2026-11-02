@@ -199,7 +199,7 @@ a force-feedback wheel is connected. Runs are saved as CSV in `.../current/model
 car spins (slip angle above 30 degrees).
 
 **Test sled (in-game rig).** The mod ships a minimal vehicle, "ModelTire test sled": a box on four identical wheels (the game's
-205/55R16 tyre), each on its own spring and damper, with adjustable ballast and tyre pressure. Nothing else touches the ground, so
+245/40R18 Asphalt Rally tyre), each on its own spring and damper, with adjustable ballast and tyre pressure. Nothing else touches the ground, so
 the load on the wheels is exactly its weight. Spawn it on a large flat area, sit in it, and pick the sweep test "rig slip ramp". A
 controller (`rig.lua`) moves the sled at the chosen speed, holds its heading, and turns the direction of travel from 0 to the
 chosen slip angle, so the slip angle is exactly what you set. It pushes at ground level, which cancels the roll and pitch couples,

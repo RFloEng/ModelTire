@@ -22,7 +22,7 @@ def env(name, default):
 
 
 # x: left positive, y: forward negative, z up. The wheel centre is the origin of x and y.
-HUB_Z = 0.315
+HUB_Z = 0.325
 HUB_X = 0.125                        # the hub nodes (the axle) at +-HUB_X
 FW, FL = env("FW", 0.5), env("FL", 0.8)         # frame half width and half length
 FB_Z, FT_Z = env("FB_Z", 0.04), env("FT_Z", 0.95)  # frame bottom (the force nodes, at ground height) and top (the upper pivot)
@@ -136,7 +136,7 @@ jb = '''{
     "variables": [
         ["name", "type", "unit", "category", "default", "min", "max", "title", "description"],
         ["$ballast", "range", "kg", "Rig", %d, 0, 600, "Ballast", "Mass of the frame's lower corners (the wheel load is set by the controller, not by this)", {"stepDis":25}],
-        ["$tirepressure", "range", "psi", "Wheels", 30, 15, 50, "Tire Pressure", "Relative to atmospheric pressure"]
+        ["$tirepressure", "range", "psi", "Wheels", 28, 15, 50, "Tire Pressure", "Relative to atmospheric pressure"]
     ],
     "nodes": [
         ["id", "posX", "posY", "posZ"],
